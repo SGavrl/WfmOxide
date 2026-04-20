@@ -1,11 +1,82 @@
 use crate::mmap::{WfmFile};
-use crate::structs::{WfmHeader1000Z, WfmHeader1000E, TektronixHeader};
+use crate::structs::{WfmHeader1000Z, WfmHeader1000E, WfmHeader2000, TektronixHeader};
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
 
 pub struct Parser;
 
 impl Parser {
+    pub fn get_channel_data_2000<'py>(
+        py: Python<'py>,
+        wfm: &WfmFile,
+        header: &WfmHeader2000,
+        channel_idx: usize,
+    ) -> PyResult<Bound<'py, PyArray1<f32>>> {
+        if channel_idx > 3 {
+            return Err(pyo3::exceptions::PyValueError::new_err("Channel must be between 1 and 4"));
+        }
+        
+        if !header.is_ch_enabled(channel_idx) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!("Channel {} is not enabled", channel_idx + 1)));
+        }
+
+        let channel = &header.channels[channel_idx];
+        let points = header.wfm_len as usize;
+        
+        if header.interwoven() {
+            // Need to interleave from physical channel 1 and 2 memory
+            let half_points = header.raw_depth();
+            let offset_a = (header.channel_offsets[0] + header.z_pt_offset) as usize;
+            let offset_b = (header.channel_offsets[1] + header.z_pt_offset) as usize;
+            
+            if offset_a + half_points > wfm.mmap.len() || offset_b + half_points > wfm.mmap.len() {
+                return Err(pyo3::exceptions::PyValueError::new_err("Invalid channel data offset (interwoven)"));
+            }
+            
+            let raw_a = &wfm.mmap[offset_a..offset_a + half_points];
+            let raw_b = &wfm.mmap[offset_b..offset_b + half_points];
+            
+            let y_scale = channel.volt_scale();
+            let y_offset = channel.volt_offset;
+            let midpoint = 127.0;
+            
+            let array = unsafe { PyArray1::new(py, [points], false) };
+            {
+                let array_slice = unsafe { array.as_slice_mut()? };
+                for i in 0..half_points {
+                    array_slice[i * 2] = y_scale * (raw_a[i] as f32 - midpoint) - y_offset;
+                    if i * 2 + 1 < points {
+                        array_slice[i * 2 + 1] = y_scale * (raw_b[i] as f32 - midpoint) - y_offset;
+                    }
+                }
+            }
+            return Ok(array);
+        }
+
+        // Not interwoven, continuous block
+        let data_start = (header.channel_offsets[channel_idx] + header.z_pt_offset) as usize;
+        if data_start + points > wfm.mmap.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err("Invalid channel data offset"));
+        }
+        
+        let raw_data = &wfm.mmap[data_start..data_start + points];
+        
+        let y_scale = channel.volt_scale();
+        let y_offset = channel.volt_offset;
+        let midpoint = 127.0;
+
+        let array = unsafe { PyArray1::new(py, [points], false) };
+        {
+            let array_slice = unsafe { array.as_slice_mut()? };
+            for i in 0..points {
+                let raw_byte = raw_data[i] as f32;
+                // For DS2000, volt_scale is normal polarity, so it's volt_scale * (raw - 127) - offset
+                array_slice[i] = y_scale * (raw_byte - midpoint) - y_offset;
+            }
+        }
+        Ok(array)
+    }
+
     pub fn get_channel_data_tektronix<'py>(
         py: Python<'py>,
         wfm: &WfmFile,

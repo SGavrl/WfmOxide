@@ -2,11 +2,12 @@ use std::fs::File;
 use std::io::{Cursor, Seek, SeekFrom};
 use memmap2::Mmap;
 use binrw::{BinRead, Endian};
-use crate::structs::{FileHeader, WfmHeader1000Z, WfmHeader1000E, TektronixStaticFileInfo, TektronixHeader};
+use crate::structs::{FileHeader, WfmHeader1000Z, WfmHeader1000E, WfmHeader2000, FileHeader2000, TektronixStaticFileInfo, TektronixHeader};
 
 pub enum WfmHeader {
     Ds1000z(WfmHeader1000Z),
     Ds1000e(WfmHeader1000E),
+    Ds2000(WfmHeader2000),
     Tektronix(TektronixHeader),
 }
 
@@ -81,6 +82,23 @@ impl WfmFile {
                 model_number: "DS1000E".to_string(),
                 firmware_version: "Unknown".to_string(),
                 wfm_header: WfmHeader::Ds1000e(header),
+            });
+        }
+        
+        if magic == [0xa5, 0xa5, 0x38, 0x00] {
+            // DS2000 family
+            let (file_header, wfm_header) = {
+                let mut cursor = Cursor::new(&mmap);
+                let file_header = FileHeader2000::read(&mut cursor)?;
+                cursor.set_position(56);
+                let wfm_header = WfmHeader2000::read(&mut cursor)?;
+                (file_header, wfm_header)
+            };
+            return Ok(WfmFile {
+                mmap,
+                model_number: file_header.model_number,
+                firmware_version: file_header.firmware_version,
+                wfm_header: WfmHeader::Ds2000(wfm_header),
             });
         }
         

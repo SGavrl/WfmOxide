@@ -45,6 +45,9 @@ impl WfmOxide {
             mmap::WfmHeader::Ds1000e(header) => {
                 Parser::get_channel_data_1000e(py, &self.inner, header, channel - 1)
             },
+            mmap::WfmHeader::Ds2000(header) => {
+                Parser::get_channel_data_2000(py, &self.inner, header, channel - 1)
+            },
             mmap::WfmHeader::Tektronix(header) => {
                 Parser::get_channel_data_tektronix(py, &self.inner, header, channel - 1)
             }

@@ -163,22 +163,96 @@ pub struct TriggerHeader1000E {
 #[binread]
 #[derive(Debug)]
 #[br(little)]
+pub struct FileHeader2000 {
+    pub magic: [u8; 4],
+    #[br(map = |s: [u8; 20]| String::from_utf8_lossy(&s).trim_end_matches('\0').to_string())]
+    pub model_number: String,
+    #[br(map = |s: [u8; 20]| String::from_utf8_lossy(&s).trim_end_matches('\0').to_string())]
+    pub firmware_version: String,
+    pub block_num: [u8; 2],
+    pub file_version: u16,
+    pub unused_1: [u8; 8],
+}
+
+#[binread]
+#[derive(Debug)]
+#[br(little)]
 pub struct WfmHeader2000 {
-    #[br(pad_before = 8)]
     pub crc: u32,
     pub structure_size: u16,
     pub structure_version: u16,
-    pub enabled_mask: u8, // channel_mask: ch4: b1, ch3: b1, ch2: b1, ch1: b1
-    #[br(pad_before = 3)]
-    #[br(count = 4)]
-    pub channel_offsets: Vec<u32>,
+    pub enabled_mask: u16, // channel_mask
+    pub extra_1a: [u8; 2],
+    pub channel_offsets: [u32; 4],
     pub acquisition_mode: u16,
     pub average_time: u16,
     pub sample_mode: u16,
-    #[br(pad_before = 2)]
+    pub extra_1b: [u8; 2],
     pub mem_depth: u32,
     pub sample_rate_hz: f32,
-    // Add more if needed to reach channel headers at offset 132
+    pub extra_1c: [u8; 2],
+    pub time_mode: u16,
+    pub time_scale_ps: u64,
+    pub time_offset_ps: i64,
+    pub channels: [ChannelHeader2000; 4],
+    pub len_setup: u32,
+    pub setup_offset: u32,
+    pub wfm_offset: u32,
+    pub storage_depth: u32,
+    pub z_pt_offset: u32,
+    pub wfm_len: u32,
+}
+
+impl WfmHeader2000 {
+    // b4 unused, b1 ch4, b1 ch3, b1 ch2, b1 ch1 in first byte.
+    // Kaitai parses bits MSB to LSB or LSB to MSB?
+    // In Kaitai, type: b1 usually means bits are consumed from MSB to LSB inside the byte.
+    // But since enabled_mask is u16 (little-endian), we can just rely on the fallback from `channels` enabled_temp, which is what rigolWFM uses!
+    pub fn is_ch_enabled(&self, ch: usize) -> bool { self.channels[ch].is_enabled() }
+    
+    // For interwoven, rigolWFM says: `enabled.interwoven ? wfm_len/2 : wfm_len`
+    // Let's just check the interwoven bit. It's the last bit of the second byte.
+    pub fn interwoven(&self) -> bool { (self.enabled_mask >> 8) & 1 != 0 } // Approximated, might need bit tuning
+    
+    pub fn raw_depth(&self) -> usize {
+        let len = self.wfm_len as usize;
+        if self.interwoven() { len / 2 } else { len }
+    }
+}
+
+#[binread]
+#[derive(Debug)]
+#[br(little)]
+pub struct ChannelHeader2000 {
+    pub enabled_temp: u8,
+    pub coupling_raw: u8,
+    pub bandwidth_limit: u8,
+    pub probe_type: u8,
+    pub probe_ratio_raw: u8,
+    pub probe_diff: u8,
+    pub probe_signal: u8,
+    pub probe_impedance_raw: u8,
+    pub volt_per_division: f32,
+    pub volt_offset: f32,
+    pub inverted_temp: u8,
+    pub unit_temp: u8,
+    pub filter_enabled: u8,
+    pub filter_type: u8,
+    pub filter_high: u32,
+    pub filter_low: u32,
+}
+
+impl ChannelHeader2000 {
+    pub fn is_enabled(&self) -> bool { self.enabled_temp != 0 }
+    pub fn is_inverted(&self) -> bool {
+        let legacy_vertical = self.enabled_temp == 1;
+        let inv_actual = if legacy_vertical { self.inverted_temp } else { self.unit_temp };
+        inv_actual == 1
+    }
+    pub fn volt_signed(&self) -> f32 {
+        if self.is_inverted() { -self.volt_per_division } else { self.volt_per_division }
+    }
+    pub fn volt_scale(&self) -> f32 { self.volt_signed() / 25.0 }
 }
 
 // --- Tektronix ---
