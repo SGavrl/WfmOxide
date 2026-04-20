@@ -111,4 +111,3 @@ This project relies on the extensive reverse-engineering documentation compiled 
 
 *RigolWFM License (BSD 3-Clause):*
 *Copyright (c) 2020-23, Scott Prahl. All rights reserved.*
-```
