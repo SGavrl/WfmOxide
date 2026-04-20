@@ -38,11 +38,18 @@ Binary formats vary heavily by manufacturer and firmware version. Support is imp
 
 ## Installation & Setup
 
-WfmOxide is built from source using `maturin`.
+WfmOxide is distributed as pre-compiled wheels via PyPI. For standard usage, no local Rust toolchain is required.
 
-### Standard Python Environment
+### Standard Installation (Recommended)
 ```bash
-git clone https://github.com/yourusername/WfmOxide.git
+pip install wfm-oxide
+```
+
+### Building from Source
+For development purposes or deployment on unsupported architectures, WfmOxide can be compiled directly from source using `maturin`.
+
+```bash
+git clone [https://github.com/yourusername/WfmOxide.git](https://github.com/yourusername/WfmOxide.git)
 cd WfmOxide
 
 python3 -m venv .venv
@@ -104,3 +111,4 @@ This project relies on the extensive reverse-engineering documentation compiled 
 
 *RigolWFM License (BSD 3-Clause):*
 *Copyright (c) 2020-23, Scott Prahl. All rights reserved.*
+```
