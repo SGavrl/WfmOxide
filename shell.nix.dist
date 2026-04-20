@@ -1,0 +1,32 @@
+{ pkgs ? import <nixpkgs> {} }:
+
+pkgs.mkShell {
+  buildInputs = with pkgs; [
+    # --- Rust Toolchain ---
+    rustc
+    cargo
+    rustfmt
+    clippy
+    rust-analyzer
+    
+    # --- Python Development ---
+    python3
+    maturin
+    
+    # --- System Libraries ---
+    pkg-config
+    stdenv.cc.cc.lib # Required for libstdc++.so.6 (NumPy/Maturin compatibility)
+  ];
+
+  shellHook = ''
+    export CARGO_BUILD_JOBS=4
+    export RUST_BACKTRACE=1
+    
+    # Ensure C-extensions (like NumPy and WfmOxide) can find required system libraries
+    export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH"
+
+    echo "--------------------------------------------------"
+    echo "WfmOxide Development Environment Loaded"
+    echo "--------------------------------------------------"
+  '';
+}
