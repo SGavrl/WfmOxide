@@ -16,9 +16,9 @@ Binary formats vary heavily by manufacturer and firmware version. Support is imp
 | Manufacturer | Family | Status | Notes |
 | :--- | :--- | :--- | :--- |
 | **Rigol** | DS1000Z (e.g., DS1054Z) | Supported | Verified against reference datasets. |
-| **Rigol** | DS1000E/D | WIP | Header parsing complete; data offset tuning required. |
+| **Rigol** | DS1000E/D | Supported | Full channel parsing and verified voltage scaling. |
 | **Rigol** | DS2000 | Planned | Header definitions mapped. |
-| **Tektronix**| TDS6000/7000 | Planned | Static file info parser mapped. |
+| **Tektronix**| TDS/DPO/MSO (WFM#001-003) | Supported | Full dynamic scaling, offsets, and endianness support. |
 
 ## Installation & Setup
 
