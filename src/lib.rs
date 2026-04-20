@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use numpy::PyArray1;
+use numpy::{IntoPyArray, PyArray1};
 
 mod mmap;
 mod parser;
@@ -18,7 +18,7 @@ impl WfmOxide {
     #[new]
     fn new(path: &str) -> PyResult<Self> {
         let inner = WfmFile::open(path).map_err(|e| {
-            pyo3::exceptions::PyIOError::new_err(format!("Failed to open WFM file: {}", e))
+            pyo3::exceptions::PyOSError::new_err(format!("Failed to open WFM file: {}", e))
         })?;
         Ok(WfmOxide { inner })
     }
@@ -37,27 +37,43 @@ impl WfmOxide {
         if channel < 1 || channel > 4 {
             return Err(pyo3::exceptions::PyValueError::new_err("Channel must be between 1 and 4"));
         }
-        
-        match &self.inner.wfm_header {
-            mmap::WfmHeader::Ds1000z(header) => {
-                Parser::get_channel_data_1000z(py, &self.inner, header, channel - 1)
-            },
-            mmap::WfmHeader::Ds1000e(header) => {
-                Parser::get_channel_data_1000e(py, &self.inner, header, channel - 1)
-            },
-            mmap::WfmHeader::Ds2000(header) => {
-                Parser::get_channel_data_2000(py, &self.inner, header, channel - 1)
-            },
-            mmap::WfmHeader::Tektronix(header) => {
-                Parser::get_channel_data_tektronix(py, &self.inner, header, channel - 1)
+
+        let result = py.allow_threads(|| {
+            match &self.inner.wfm_header {
+                mmap::WfmHeader::Ds1000z(header) => {
+                    Parser::get_channel_data_1000z(&self.inner, header, channel - 1)
+                },
+                mmap::WfmHeader::Ds1000e(header) => {
+                    Parser::get_channel_data_1000e(&self.inner, header, channel - 1)
+                },
+                mmap::WfmHeader::Ds2000(header) => {
+                    Parser::get_channel_data_2000(&self.inner, header, channel - 1)
+                },
+                mmap::WfmHeader::Tektronix(header) => {
+                    Parser::get_channel_data_tektronix(&self.inner, header, channel - 1)
+                }
             }
-        }
+        }).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        Ok(result.into_pyarray(py))
+    }
+
+    fn get_all_channels<'py>(&self, py: Python<'py>) -> PyResult<Vec<Option<Bound<'py, PyArray1<f32>>>>> {
+        let results = py.allow_threads(|| {
+            Parser::get_all_channels(&self.inner)
+        }).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let py_results = results.into_iter().map(|opt_vec| {
+            opt_vec.map(|vec| vec.into_pyarray(py))
+        }).collect();
+
+        Ok(py_results)
     }
 }
 
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<WfmOxide>()?;
+    m.add_class::<WfmOxide>()? ;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

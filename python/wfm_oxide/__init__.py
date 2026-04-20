@@ -24,3 +24,10 @@ class WfmOxide:
             channel: The channel number (1-4).
         """
         return self._inner.get_channel_data(channel)
+
+    def get_all_channels(self):
+        """
+        Returns a list of NumPy arrays for all channels. 
+        Channels that are not enabled will be None.
+        """
+        return self._inner.get_all_channels()

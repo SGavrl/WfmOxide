@@ -65,3 +65,17 @@ def test_tektronix_003():
     expected = 0.05 * np.array([-10, -5, 0, 5, 10], dtype=np.float32) + 0.25
     
     np.testing.assert_allclose(volts, expected, rtol=1e-5, atol=1e-5)
+
+def test_get_all_channels():
+    path = "test_data/DS1054Z-ch1SquareCH2Uart.wfm"
+    w_oxide = WfmOxide(path)
+    all_ch = w_oxide.get_all_channels()
+    
+    # This specific file has CH1 and CH2 enabled
+    assert all_ch[0] is not None
+    assert all_ch[1] is not None
+    assert all_ch[2] is None
+    assert all_ch[3] is None
+    
+    assert len(all_ch[0]) == 60256
+    assert len(all_ch[1]) == 60256
