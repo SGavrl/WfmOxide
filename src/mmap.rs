@@ -1,12 +1,13 @@
 use std::fs::File;
-use std::io::Cursor;
+use std::io::{Cursor, Seek, SeekFrom};
 use memmap2::Mmap;
-use binrw::BinRead;
-use crate::structs::{FileHeader, WfmHeader1000Z, WfmHeader1000E};
+use binrw::{BinRead, Endian};
+use crate::structs::{FileHeader, WfmHeader1000Z, WfmHeader1000E, TektronixStaticFileInfo, TektronixHeader};
 
 pub enum WfmHeader {
     Ds1000z(WfmHeader1000Z),
     Ds1000e(WfmHeader1000E),
+    Tektronix(TektronixHeader),
 }
 
 pub struct WfmFile {
@@ -23,6 +24,51 @@ impl WfmFile {
         
         // Peek at first 4 bytes for magic
         let magic = &mmap[0..4];
+        
+        // Tektronix byte order check (0x0F0F little endian, 0xF0F0 big endian)
+        if magic[0..2] == [0x0f, 0x0f] || magic[0..2] == [0xf0, 0xf0] {
+            let mut cursor = Cursor::new(&mmap);
+            let is_le = magic[0..2] == [0x0f, 0x0f];
+            
+            let endian = if is_le { Endian::Little } else { Endian::Big };
+            
+            let static_info = TektronixStaticFileInfo::read_options(&mut cursor, endian, ())?;
+            
+            let version = static_info.version_number.clone();
+            
+            let (exp_dim_offset, curve_offset) = if version.starts_with("WFM#001") {
+                (166, 790)
+            } else if version.starts_with("WFM#002") {
+                (168, 792)
+            } else if version.starts_with("WFM#003") {
+                (168, 808)
+            } else {
+                return Err(anyhow::anyhow!("Unsupported Tektronix WFM version: {}", version));
+            };
+
+            cursor.seek(SeekFrom::Start(exp_dim_offset))?;
+            let y_scale = f64::read_options(&mut cursor, endian, ())?;
+            let y_offset = f64::read_options(&mut cursor, endian, ())?;
+
+            cursor.seek(SeekFrom::Start(curve_offset + 14))?;
+            let data_start_offset = u32::read_options(&mut cursor, endian, ())?;
+            let postcharge_start_offset = u32::read_options(&mut cursor, endian, ())?;
+
+            let tek_header = TektronixHeader {
+                static_info,
+                y_scale,
+                y_offset,
+                data_start_offset,
+                postcharge_start_offset,
+            };
+
+            return Ok(WfmFile {
+                mmap,
+                model_number: "Tektronix".to_string(),
+                firmware_version: version,
+                wfm_header: WfmHeader::Tektronix(tek_header),
+            });
+        }
         
         if magic == [0xa5, 0xa5, 0x00, 0x00] {
             // DS1000E family

@@ -71,3 +71,6 @@ docs/_build/
 # Pyenv
 .python-version
 shell.nix
+
+# Dev Scripts
+dev_scripts/

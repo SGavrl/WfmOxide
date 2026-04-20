@@ -1,11 +1,72 @@
 use crate::mmap::{WfmFile};
-use crate::structs::{WfmHeader1000Z, WfmHeader1000E};
+use crate::structs::{WfmHeader1000Z, WfmHeader1000E, TektronixHeader};
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
 
 pub struct Parser;
 
 impl Parser {
+    pub fn get_channel_data_tektronix<'py>(
+        py: Python<'py>,
+        wfm: &WfmFile,
+        header: &TektronixHeader,
+        channel_idx: usize,
+    ) -> PyResult<Bound<'py, PyArray1<f32>>> {
+        if channel_idx > 0 {
+            // Tektronix WFM typically contains only one waveform per file
+            return Err(pyo3::exceptions::PyValueError::new_err("Tektronix WFM typically contains only 1 channel"));
+        }
+
+        let base_start = header.static_info.byte_offset_to_curve_buffer as usize;
+        let data_start = base_start + header.data_start_offset as usize;
+        let data_end = base_start + header.postcharge_start_offset as usize;
+        let bpp = header.static_info.num_bytes_per_point as usize;
+
+        if data_end > wfm.mmap.len() || data_start >= data_end {
+            return Err(pyo3::exceptions::PyValueError::new_err("Invalid curve buffer offsets"));
+        }
+
+        let raw_data = &wfm.mmap[data_start..data_end];
+        let points = raw_data.len() / bpp;
+
+        let y_scale = header.y_scale as f32;
+        let y_offset = header.y_offset as f32;
+        let is_le = header.static_info.byte_order == 0x0f0f;
+
+        let array = unsafe { PyArray1::new(py, [points], false) };
+        {
+            let array_slice = unsafe { array.as_slice_mut()? };
+            if bpp == 1 {
+                for i in 0..points {
+                    let raw_val = raw_data[i] as i8 as f32; // Assuming signed 8-bit for Tek
+                    array_slice[i] = raw_val * y_scale + y_offset;
+                }
+            } else if bpp == 2 {
+                for i in 0..points {
+                    let raw_val = if is_le {
+                        i16::from_le_bytes([raw_data[i * 2], raw_data[i * 2 + 1]]) as f32
+                    } else {
+                        i16::from_be_bytes([raw_data[i * 2], raw_data[i * 2 + 1]]) as f32
+                    };
+                    array_slice[i] = raw_val * y_scale + y_offset;
+                }
+            } else if bpp == 4 {
+                // Often FP32 or INT32, we assume FP32 given typical '002'/'003' files if scale is 1.0, but let's stick to safe fallback.
+                for i in 0..points {
+                    let raw_val = if is_le {
+                        i32::from_le_bytes([raw_data[i * 4], raw_data[i * 4 + 1], raw_data[i * 4 + 2], raw_data[i * 4 + 3]]) as f32
+                    } else {
+                        i32::from_be_bytes([raw_data[i * 4], raw_data[i * 4 + 1], raw_data[i * 4 + 2], raw_data[i * 4 + 3]]) as f32
+                    };
+                    array_slice[i] = raw_val * y_scale + y_offset;
+                }
+            } else {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!("Unsupported bytes per point: {}", bpp)));
+            }
+        }
+        Ok(array)
+    }
+
     pub fn get_channel_data_1000z<'py>(
         py: Python<'py>,
         wfm: &WfmFile,
@@ -77,7 +138,7 @@ impl Parser {
         let channel = &header.channels[channel_idx];
         let points = if channel_idx == 0 { header.ch1_points() } else { header.ch2_points() };
         
-        let data_start = 272; // Adjusted from 276
+        let data_start = 276;
         let ch1_total = if ch1_enabled { header.ch1_points() + header.ch1_skip() } else { 0 };
         let offset = if channel_idx == 0 { 0 } else { ch1_total };
 
@@ -95,7 +156,7 @@ impl Parser {
             let array_slice = unsafe { array.as_slice_mut()? };
             for i in 0..points {
                 let raw_byte = raw_data[i] as f32;
-                array_slice[i] = y_scale * (raw_byte - midpoint) - y_offset;
+                array_slice[i] = y_scale * (midpoint - raw_byte) - y_offset;
             }
         }
         Ok(array)

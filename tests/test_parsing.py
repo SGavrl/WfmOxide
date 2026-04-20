@@ -42,3 +42,23 @@ def test_correctness(filename, model_id):
             # Should raise error for disabled channels in oxide
             with pytest.raises(ValueError):
                 w_oxide.get_channel_data(ch_idx)
+
+def test_tektronix_002():
+    path = "test_data/tek_002.wfm"
+    w_oxide = WfmOxide(path)
+    assert w_oxide.model == "Tektronix"
+    
+    volts = w_oxide.get_channel_data(1)
+    expected = 0.02 * np.array([-8, -1, 0, 7, 12], dtype=np.float32) - 1.0
+    
+    np.testing.assert_allclose(volts, expected, rtol=1e-5, atol=1e-5)
+
+def test_tektronix_003():
+    path = "test_data/tek_003.wfm"
+    w_oxide = WfmOxide(path)
+    assert w_oxide.model == "Tektronix"
+    
+    volts = w_oxide.get_channel_data(1)
+    expected = 0.05 * np.array([-10, -5, 0, 5, 10], dtype=np.float32) + 0.25
+    
+    np.testing.assert_allclose(volts, expected, rtol=1e-5, atol=1e-5)

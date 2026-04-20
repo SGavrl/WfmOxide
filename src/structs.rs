@@ -93,21 +93,24 @@ pub struct WfmHeader1000E {
     #[br(pad_before = 4)]
     pub ch1_memory_depth: u32,
     pub active_channel: u8,
-    #[br(pad_before = 3)]
-    pub ch2_memory_depth: u32,
-    #[br(count = 2)]
-    pub channels: Vec<ChannelHeader1000E>,
+    #[br(pad_before = 1)]
+    pub channels: [ChannelHeader1000E; 2],
+    pub time_offset: u8,
+    #[br(pad_before = 1)]
     pub time: TimeHeader1000E,
-    #[br(pad_before = 4)]
-    pub trigger: TriggerHeader1000E,
+    // We ignore the rest of the header for now because it's not needed for basic parsing
+    // and its size can vary or be complex.
 }
 
 impl WfmHeader1000E {
     pub fn ch1_skip(&self) -> usize { if self.roll_stop == 0 { 0 } else { (self.roll_stop + 2) as usize } }
     pub fn ch1_points(&self) -> usize { (self.ch1_memory_depth as usize).saturating_sub(self.ch1_skip()) }
-    pub fn ch2_points(&self) -> usize { (self.ch2_memory_depth as usize).saturating_sub(self.ch1_skip()) }
+    pub fn ch2_points(&self) -> usize {
+        // ch2_memory_depth is usually the same as ch1_memory_depth for enabled channels
+        let ch2_mem_depth = self.ch1_memory_depth; 
+        (ch2_mem_depth as usize).saturating_sub(self.ch1_skip()) 
+    }
 }
-
 #[binread]
 #[derive(Debug)]
 #[br(little)]
@@ -181,7 +184,6 @@ pub struct WfmHeader2000 {
 // --- Tektronix ---
 #[binread]
 #[derive(Debug)]
-#[br(little)]
 pub struct TektronixStaticFileInfo {
     pub byte_order: u16,
     #[br(map = |s: [u8; 8]| String::from_utf8_lossy(&s).trim_end_matches('\0').to_string())]
@@ -192,9 +194,17 @@ pub struct TektronixStaticFileInfo {
     pub byte_offset_to_curve_buffer: i32,
     pub horiz_zoom_scale_factor: i32,
     pub horiz_zoom_position: f32,
-    pub vert_zoom_scale_factor: i32,
+    pub vert_zoom_scale_factor: f64,
     pub vert_zoom_position: f32,
     pub waveform_label: [u8; 32],
     pub n_frames: u32,
-    pub size_storage_set: u16,
+    pub wfm_header_size: u16,
+}
+
+pub struct TektronixHeader {
+    pub static_info: TektronixStaticFileInfo,
+    pub y_scale: f64,
+    pub y_offset: f64,
+    pub data_start_offset: u32,
+    pub postcharge_start_offset: u32,
 }
