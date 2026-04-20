@@ -2,12 +2,28 @@
 
 **WfmOxide** is a zero-copy parser for proprietary oscilloscope binary files (e.g., Rigol `.wfm`, Tektronix). Written in Rust with PyO3 bindings, it provides a high-performance backend alternative to pure-Python implementations like [RigolWFM](https://github.com/scottprahl/RigolWFM), optimized for deep-memory data pipelines.
 
+![Performance Benchmark Comparison](docs/global_benchmark_results.png)
+*Figure 1: End-to-end execution latency across supported hardware families.*
+
 ## Architecture & Performance
 
 * **Zero-Copy I/O:** Utilizes `memmap2` to map files directly into virtual memory. It avoids allocating memory for the raw binary payload, scaling efficiently across thousands of files.
 * **Direct Array Construction:** De-interleaves ADC bytes and applies voltage conversion mathematics in a single Rust pass, writing directly to a contiguous NumPy `float32` array.
-* **Throughput:** On supported hardware (e.g., DS1000Z series), WfmOxide parses and converts standard payloads in ~90µs, yielding roughly a 1,100x speedup over standard Python `struct` unpacking.
-* **Type Safety:** Memory-safe Rust core, distributed with complete Python type stubs (`.pyi`) for static analysis and IDE integration.
+* **Parallel Execution:** Employs multi-threaded iteration during channel extraction via `rayon`, maximizing core utilization while the Python Global Interpreter Lock (GIL) is released.
+* **Throughput:** For metadata and raw byte extraction, the pure Rust core executes in sub-millisecond timeframes (e.g., ~90µs for DS1000Z payloads), representing a multi-order-of-magnitude reduction in latency compared to standard interpreter overhead.
+
+### Empirical Benchmarks
+
+The following data details total end-to-end extraction latency, encompassing file I/O, metadata parsing, hardware-specific voltage scaling, and zero-copy transfer into the Python memory space. 
+
+To establish a conservative baseline, tests were conducted on resource-constrained hardware (Intel Core i5-6300U, 2 Physical Cores, Arch Linux). Deployments utilizing modern multi-core workstations will observe proportionally higher parallel scaling.
+
+| Oscilloscope Family | Payload Size | Data Points | Reference Python Parser | WfmOxide (Rust) | Relative Speedup |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Rigol DS1000Z** | 12.0 MB | 3.0 M | 375.2 ms | 53.5 ms | **7.0x** |
+| **Rigol DS1000E** | 1.0 MB | 1.0 M | 13.1 ms | 2.7 ms | **4.8x** |
+| **Rigol DS2000** | 14.0 MB | 7.0 M | 153.7 ms | 22.6 ms | **6.8x** |
+| **Tektronix (WFM)** | 6.0 MB | 6.0 M | 136.7 ms | 24.1 ms | **5.6x** |
 
 ## Support Matrix
 
@@ -37,7 +53,7 @@ maturin develop --release
 ```
 
 ### Reproducible Environment (Nix)
-For users on NixOS or utilizing the Nix package manager, a `shell.nix` is provided in the repository root. This locks the exact Rust toolchain and Python dependencies required for development.
+For environments utilizing the Nix package manager, a `shell.nix` is provided in the repository root to lock the exact Rust toolchain and Python dependencies required for compilation.
 
 ```bash
 # Enter the isolated build environment
