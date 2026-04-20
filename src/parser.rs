@@ -127,8 +127,8 @@ impl Parser {
             return Err(pyo3::exceptions::PyValueError::new_err("DS1000E only has 2 channels"));
         }
         
-        let ch1_enabled = (header.active_channel >> 0) & 1 != 0;
-        let ch2_enabled = (header.active_channel >> 1) & 1 != 0;
+        let ch1_enabled = header.channels[0].enabled_val != 0;
+        let ch2_enabled = header.channels[1].enabled_val != 0;
         
         let is_enabled = if channel_idx == 0 { ch1_enabled } else { ch2_enabled };
         if !is_enabled {

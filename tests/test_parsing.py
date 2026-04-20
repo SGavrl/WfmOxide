@@ -7,7 +7,8 @@ from wfm_oxide import WfmOxide
 @pytest.mark.parametrize("filename, model_id", [
     ("DS1074Z-C.wfm", "1000Z"),
     ("DS1054Z-ch1SquareCH2Uart.wfm", "1000Z"),
-    ("DS1102E-F.wfm", "E")
+    ("DS1102E-F.wfm", "E"),
+    ("DS1000E-B.wfm", "E")
 ])
 def test_correctness(filename, model_id):
     path = os.path.join("test_data", filename)
