@@ -283,3 +283,15 @@ pub struct TektronixHeader {
     pub data_start_offset: u32,
     pub postcharge_start_offset: u32,
 }
+
+// --- Tektronix ISF ---
+#[derive(Debug)]
+pub struct IsfHeader {
+    pub byt_nr: u8,
+    pub byt_or: String,
+    pub nr_pt: u32,
+    pub ymult: f32,
+    pub yoff: f32,
+    pub yzero: f32,
+    pub data_offset: usize,
+}

@@ -35,6 +35,7 @@ Binary formats vary heavily by manufacturer and firmware version. Support is imp
 | **Rigol** | DS1000E/D | Supported | Full channel parsing and verified voltage scaling. |
 | **Rigol** | DS2000 | Supported | Verified with normal and interwoven/interleaved high-res captures. |
 | **Tektronix**| TDS/DPO/MSO (WFM#001-003) | Supported | Full dynamic scaling, offsets, and endianness support. |
+| **Tektronix**| TDS 210, TDS 1000, TPS 2024 (ISF) | Supported | Native ASCII-header parsing and zero-copy binary extraction. |
 
 ## Installation & Setup
 

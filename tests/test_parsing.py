@@ -66,6 +66,26 @@ def test_tektronix_003():
     
     np.testing.assert_allclose(volts, expected, rtol=1e-5, atol=1e-5)
 
+def test_tektronix_isf_16bit():
+    path = "test_data/tek_synth.isf"
+    w_oxide = WfmOxide(path)
+    assert w_oxide.model == "Tektronix ISF"
+    
+    volts = w_oxide.get_channel_data(1)
+    expected = 0.25 + 0.02 * (np.array([-10, 0, 10, 20], dtype=np.float32) - 5.0)
+    
+    np.testing.assert_allclose(volts, expected, rtol=1e-5, atol=1e-5)
+
+def test_tektronix_isf_8bit():
+    path = "test_data/tek_synth_8bit.isf"
+    w_oxide = WfmOxide(path)
+    assert w_oxide.model == "Tektronix ISF"
+    
+    volts = w_oxide.get_channel_data(1)
+    expected = 0.25 + 0.02 * (np.array([-10, 0, 10, 20], dtype=np.float32) - 5.0)
+    
+    np.testing.assert_allclose(volts, expected, rtol=1e-5, atol=1e-5)
+
 def test_get_all_channels():
     path = "test_data/DS1054Z-ch1SquareCH2Uart.wfm"
     w_oxide = WfmOxide(path)

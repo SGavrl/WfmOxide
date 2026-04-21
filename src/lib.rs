@@ -51,6 +51,9 @@ impl WfmOxide {
                 },
                 mmap::WfmHeader::Tektronix(header) => {
                     Parser::get_channel_data_tektronix(&self.inner, header, channel - 1)
+                },
+                mmap::WfmHeader::Isf(header) => {
+                    Parser::get_channel_data_isf(&self.inner, header, channel - 1)
                 }
             }
         }).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;

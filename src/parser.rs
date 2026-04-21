@@ -1,5 +1,5 @@
 use crate::mmap::{WfmFile, WfmHeader};
-use crate::structs::{WfmHeader1000Z, WfmHeader1000E, WfmHeader2000, TektronixHeader};
+use crate::structs::{WfmHeader1000Z, WfmHeader1000E, WfmHeader2000, TektronixHeader, IsfHeader};
 use rayon::prelude::*;
 
 pub struct Parser;
@@ -8,25 +8,71 @@ impl Parser {
     pub fn get_all_channels(wfm: &WfmFile) -> anyhow::Result<Vec<Option<Vec<f32>>>> {
         match &wfm.wfm_header {
             WfmHeader::Ds1000z(header) => {
-                (1..=4).into_par_iter().map(|ch| {
-                    Self::get_channel_data_1000z(wfm, header, ch - 1).ok()
-                }).map(Ok).collect()
+                let results: Vec<_> = (0..4).into_par_iter().map(|ch_idx| {
+                    Self::get_channel_data_1000z(wfm, header, ch_idx).ok()
+                }).collect();
+                Ok(results)
             },
             WfmHeader::Ds1000e(header) => {
-                (1..=2).into_par_iter().map(|ch| {
-                    Self::get_channel_data_1000e(wfm, header, ch - 1).ok()
-                }).map(Ok).collect()
+                let results: Vec<_> = (0..2).into_par_iter().map(|ch_idx| {
+                    Self::get_channel_data_1000e(wfm, header, ch_idx).ok()
+                }).collect();
+                Ok(results)
             },
             WfmHeader::Ds2000(header) => {
-                (1..=4).into_par_iter().map(|ch| {
-                    Self::get_channel_data_2000(wfm, header, ch - 1).ok()
-                }).map(Ok).collect()
+                let results: Vec<_> = (0..4).into_par_iter().map(|ch_idx| {
+                    Self::get_channel_data_2000(wfm, header, ch_idx).ok()
+                }).collect();
+                Ok(results)
             },
             WfmHeader::Tektronix(header) => {
-                // Tektronix usually has 1 channel
                 Ok(vec![Self::get_channel_data_tektronix(wfm, header, 0).ok()])
+            },
+            WfmHeader::Isf(header) => {
+                Ok(vec![Self::get_channel_data_isf(wfm, header, 0).ok()])
             }
         }
+    }
+
+    pub fn get_channel_data_isf(
+        wfm: &WfmFile,
+        header: &IsfHeader,
+        channel_idx: usize,
+    ) -> anyhow::Result<Vec<f32>> {
+        if channel_idx > 0 {
+            return Err(anyhow::anyhow!("ISF files typically contain only 1 channel"));
+        }
+
+        let raw_data = &wfm.mmap[header.data_offset..];
+        let points = header.nr_pt as usize;
+        let bpp = header.byt_nr as usize;
+
+        if points * bpp > raw_data.len() {
+            // Some ISF files report larger NR_PT than actual data length
+            // We should use the actual available length if it's smaller, but here we just bound it
+        }
+        
+        let actual_points = std::cmp::min(points, raw_data.len() / bpp);
+
+        let is_le = header.byt_or == "LSB";
+        let y_scale = header.ymult;
+        let y_offset = header.yzero;
+        let y_adc_offset = header.yoff;
+
+        let voltages: Vec<f32> = (0..actual_points).into_par_iter().map(|i| {
+            let raw_val = if bpp == 1 {
+                raw_data[i] as i8 as f32
+            } else {
+                if is_le {
+                    i16::from_le_bytes([raw_data[i * 2], raw_data[i * 2 + 1]]) as f32
+                } else {
+                    i16::from_be_bytes([raw_data[i * 2], raw_data[i * 2 + 1]]) as f32
+                }
+            };
+            y_offset + y_scale * (raw_val - y_adc_offset)
+        }).collect();
+
+        Ok(voltages)
     }
 
     pub fn get_channel_data_2000(
@@ -44,6 +90,9 @@ impl Parser {
 
         let channel = &header.channels[channel_idx];
         let points = header.wfm_len as usize;
+        let y_scale = channel.volt_scale();
+        let y_offset = channel.volt_offset;
+        let midpoint = 127.0f32;
         
         if header.interwoven() {
             let half_points = header.raw_depth();
@@ -57,17 +106,16 @@ impl Parser {
             let raw_a = &wfm.mmap[offset_a..offset_a + half_points];
             let raw_b = &wfm.mmap[offset_b..offset_b + half_points];
             
-            let y_scale = channel.volt_scale();
-            let y_offset = channel.volt_offset;
-            let midpoint = 127.0;
+            // Parallelize the interwoven reconstruction
+            let voltages: Vec<f32> = (0..points).into_par_iter().map(|i| {
+                let raw_byte = if i % 2 == 0 {
+                    raw_a[i / 2]
+                } else {
+                    raw_b[i / 2]
+                };
+                y_scale * (raw_byte as f32 - midpoint) - y_offset
+            }).collect();
             
-            let mut voltages = Vec::with_capacity(points);
-            for i in 0..half_points {
-                voltages.push(y_scale * (raw_a[i] as f32 - midpoint) - y_offset);
-                if i * 2 + 1 < points {
-                    voltages.push(y_scale * (raw_b[i] as f32 - midpoint) - y_offset);
-                }
-            }
             return Ok(voltages);
         }
 
@@ -77,13 +125,13 @@ impl Parser {
         }
         
         let raw_data = &wfm.mmap[data_start..data_start + points];
-        let y_scale = channel.volt_scale();
-        let y_offset = channel.volt_offset;
-        let midpoint = 127.0;
 
-        Ok(raw_data.iter().map(|&raw_byte| {
+        // Parallel map for contiguous data
+        let voltages: Vec<f32> = raw_data.par_iter().map(|&raw_byte| {
             y_scale * (raw_byte as f32 - midpoint) - y_offset
-        }).collect())
+        }).collect();
+
+        Ok(voltages)
     }
 
     pub fn get_channel_data_tektronix(
@@ -111,33 +159,25 @@ impl Parser {
         let y_offset = header.y_offset as f32;
         let is_le = header.static_info.byte_order == 0x0f0f;
 
-        let mut voltages = Vec::with_capacity(points);
-        if bpp == 1 {
-            for i in 0..points {
-                let raw_val = raw_data[i] as i8 as f32;
-                voltages.push(raw_val * y_scale + y_offset);
-            }
-        } else if bpp == 2 {
-            for i in 0..points {
-                let raw_val = if is_le {
+        let voltages: Vec<f32> = (0..points).into_par_iter().map(|i| {
+            let raw_val = if bpp == 1 {
+                raw_data[i] as i8 as f32
+            } else if bpp == 2 {
+                if is_le {
                     i16::from_le_bytes([raw_data[i * 2], raw_data[i * 2 + 1]]) as f32
                 } else {
                     i16::from_be_bytes([raw_data[i * 2], raw_data[i * 2 + 1]]) as f32
-                };
-                voltages.push(raw_val * y_scale + y_offset);
-            }
-        } else if bpp == 4 {
-            for i in 0..points {
-                let raw_val = if is_le {
+                }
+            } else {
+                if is_le {
                     i32::from_le_bytes([raw_data[i * 4], raw_data[i * 4 + 1], raw_data[i * 4 + 2], raw_data[i * 4 + 3]]) as f32
                 } else {
                     i32::from_be_bytes([raw_data[i * 4], raw_data[i * 4 + 1], raw_data[i * 4 + 2], raw_data[i * 4 + 3]]) as f32
-                };
-                voltages.push(raw_val * y_scale + y_offset);
-            }
-        } else {
-            return Err(anyhow::anyhow!("Unsupported bytes per point: {}", bpp));
-        }
+                }
+            };
+            raw_val * y_scale + y_offset
+        }).collect();
+
         Ok(voltages)
     }
 
@@ -179,11 +219,11 @@ impl Parser {
         let y_offset = channel.shift - vertical_bias;
         let midpoint = 127.0f32;
 
-        let mut voltages = Vec::with_capacity(points);
-        for i in 0..points {
+        let voltages: Vec<f32> = (0..points).into_par_iter().map(|i| {
             let raw_byte = raw_data[i * stride + offset] as f32;
-            voltages.push(y_scale * (midpoint - raw_byte) - y_offset);
-        }
+            y_scale * (midpoint - raw_byte) - y_offset
+        }).collect();
+
         Ok(voltages)
     }
 
@@ -220,8 +260,10 @@ impl Parser {
         let y_offset = (channel.shift_measured as f32) * (volt_per_div / 25.0);
         let midpoint = 125.0f32;
 
-        Ok(raw_data[..points].iter().map(|&raw_byte| {
+        let voltages: Vec<f32> = raw_data[..points].par_iter().map(|&raw_byte| {
             y_scale * (midpoint - raw_byte as f32) - y_offset
-        }).collect())
+        }).collect();
+
+        Ok(voltages)
     }
 }

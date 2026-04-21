@@ -2,13 +2,14 @@ use std::fs::File;
 use std::io::{Cursor, Seek, SeekFrom};
 use memmap2::Mmap;
 use binrw::{BinRead, Endian};
-use crate::structs::{FileHeader, WfmHeader1000Z, WfmHeader1000E, WfmHeader2000, FileHeader2000, TektronixStaticFileInfo, TektronixHeader};
+use crate::structs::{FileHeader, WfmHeader1000Z, WfmHeader1000E, WfmHeader2000, FileHeader2000, TektronixStaticFileInfo, TektronixHeader, IsfHeader};
 
 pub enum WfmHeader {
     Ds1000z(WfmHeader1000Z),
     Ds1000e(WfmHeader1000E),
     Ds2000(WfmHeader2000),
     Tektronix(TektronixHeader),
+    Isf(IsfHeader),
 }
 
 pub struct WfmFile {
@@ -22,6 +23,81 @@ impl WfmFile {
     pub fn open(path: &str) -> anyhow::Result<Self> {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
+        
+        let mut is_isf = false;
+        let limit = std::cmp::min(mmap.len(), 512);
+        for i in 0..limit {
+            if mmap[i..limit].starts_with(b":CURV") || mmap[i..limit].starts_with(b"BYT_N") {
+                is_isf = true;
+                break;
+            }
+        }
+        
+        if is_isf {
+            let mut header_end = 0;
+            for i in 0..mmap.len() {
+                if mmap[i] == b'#' {
+                    header_end = i;
+                    break;
+                }
+            }
+            if header_end == 0 {
+                return Err(anyhow::anyhow!("Invalid ISF file: '#' not found"));
+            }
+            let header_text = String::from_utf8_lossy(&mmap[0..header_end]);
+            
+            let mut byt_nr = 2;
+            let mut byt_or = "MSB".to_string();
+            let mut nr_pt = 0;
+            let mut ymult = 1.0;
+            let mut yoff = 0.0;
+            let mut yzero = 0.0;
+            
+            let parts = header_text.split(';');
+            for part in parts {
+                let part = part.trim();
+                let part = part.strip_prefix(":WFMP:").unwrap_or(part);
+                let part = part.strip_prefix(":CURVE:").unwrap_or(part);
+                let part = part.strip_prefix(":CURV:").unwrap_or(part);
+                let part = part.strip_prefix(":").unwrap_or(part);
+                
+                let mut kv = part.splitn(2, char::is_whitespace);
+                if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
+                    let k = k.trim().to_uppercase();
+                    let v = v.trim().trim_matches('"');
+                    match k.as_str() {
+                        "BYT_NR" | "BYT_N" => byt_nr = v.parse().unwrap_or(2),
+                        "BYT_OR" | "BYT_O" => byt_or = v.to_string(),
+                        "NR_PT" | "NR_P" => nr_pt = v.parse().unwrap_or(0),
+                        "YMULT" | "YMU" => ymult = v.parse().unwrap_or(1.0),
+                        "YOFF" | "YOF" => yoff = v.parse().unwrap_or(0.0),
+                        "YZERO" | "YZE" => yzero = v.parse().unwrap_or(0.0),
+                        _ => {}
+                    }
+                }
+            }
+            
+            let n_digits_char = mmap[header_end + 1];
+            let n_digits = (n_digits_char - b'0') as usize;
+            let data_offset = header_end + 2 + n_digits;
+            
+            let isf_header = IsfHeader {
+                byt_nr,
+                byt_or,
+                nr_pt,
+                ymult,
+                yoff,
+                yzero,
+                data_offset,
+            };
+            
+            return Ok(WfmFile {
+                mmap,
+                model_number: "Tektronix ISF".to_string(),
+                firmware_version: "ISF".to_string(),
+                wfm_header: WfmHeader::Isf(isf_header),
+            });
+        }
         
         // Peek at first 4 bytes for magic
         let magic = &mmap[0..4];
