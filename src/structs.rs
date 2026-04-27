@@ -208,6 +208,64 @@ impl ChannelHeader2000 {
     pub fn volt_scale(&self) -> f32 { self.volt_signed() / 25.0 }
 }
 
+// --- DS4000 ---
+#[binread]
+#[derive(Debug)]
+#[br(little)]
+pub struct WfmHeader4000 {
+    pub unknown_1: [u32; 5],
+    pub enabled_mask: u8,
+    pub unknown_2: [u8; 3],
+    pub channel_offsets: [u32; 4],
+    pub unknown_3: u32,
+    pub unknown_4: u32,
+    pub unknown_5: u32,
+    pub mem_depth_1: u32,
+    pub sample_rate_hz: f32,
+    pub unknown_8: u32,
+    pub time_per_div_ps: u64,
+    pub unknown_9: [u32; 2],
+    pub channels: [ChannelHeader4000; 4],
+    pub unknown_33: [u32; 6],
+    pub mem_depth_2: u32,
+    pub unknown_37: u32,
+    pub mem_depth: u32,
+}
+
+impl WfmHeader4000 {
+    pub fn is_ch_enabled(&self, ch: usize) -> bool { (self.enabled_mask >> ch) & 1 != 0 }
+}
+
+#[binread]
+#[derive(Debug)]
+#[br(little)]
+pub struct ChannelHeader4000 {
+    pub enabled_val: u8,
+    pub coupling: u8,
+    pub bandwidth_limit: u8,
+    pub probe_type: u8,
+    pub probe_ratio: u8,
+    pub probe_diff: u8,
+    pub probe_signal: u8,
+    pub probe_impedance: u8,
+    pub volt_per_division: f32,
+    pub volt_offset: f32,
+    pub inverted_val: u8,
+    pub unit: u8,
+    pub filter_enabled: u8,
+    pub filter_type: u8,
+    pub filter_high: u32,
+    pub filter_low: u32,
+}
+
+impl ChannelHeader4000 {
+    pub fn is_enabled(&self) -> bool { self.enabled_val != 0 }
+    pub fn is_inverted(&self) -> bool { self.inverted_val != 0 }
+    pub fn volt_signed(&self) -> f32 {
+        if self.is_inverted() { -self.volt_per_division } else { self.volt_per_division }
+    }
+}
+
 // --- Tektronix ---
 #[binread]
 #[derive(Debug)]

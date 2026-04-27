@@ -34,6 +34,7 @@ Binary formats vary heavily by manufacturer and firmware version. Support is imp
 | **Rigol** | DS1000Z (e.g., DS1054Z) | Supported |
 | **Rigol** | DS1000E/D | Supported |
 | **Rigol** | DS2000 | Supported |
+| **Rigol** | DS4000 | Supported |
 | **Tektronix**| TDS/DPO/MSO (WFM#001-003) | Supported |
 | **Tektronix**| TDS 210, TDS 1000, TPS 2024 (ISF) | Supported |
 

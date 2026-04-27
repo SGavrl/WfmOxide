@@ -49,6 +49,9 @@ impl WfmOxide {
                 mmap::WfmHeader::Ds2000(header) => {
                     Parser::get_channel_data_2000(&self.inner, header, channel - 1)
                 },
+                mmap::WfmHeader::Ds4000(header) => {
+                    Parser::get_channel_data_4000(&self.inner, header, channel - 1)
+                },
                 mmap::WfmHeader::Tektronix(header) => {
                     Parser::get_channel_data_tektronix(&self.inner, header, channel - 1)
                 },

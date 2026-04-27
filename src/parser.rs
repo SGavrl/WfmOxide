@@ -1,5 +1,5 @@
 use crate::mmap::{WfmFile, WfmHeader};
-use crate::structs::{WfmHeader1000Z, WfmHeader1000E, WfmHeader2000, TektronixHeader, IsfHeader};
+use crate::structs::{WfmHeader1000Z, WfmHeader1000E, WfmHeader2000, WfmHeader4000, TektronixHeader, IsfHeader};
 use rayon::prelude::*;
 
 pub struct Parser;
@@ -25,6 +25,12 @@ impl Parser {
                 }).collect();
                 Ok(results)
             },
+            WfmHeader::Ds4000(header) => {
+                let results: Vec<_> = (0..4).into_par_iter().map(|ch_idx| {
+                    Self::get_channel_data_4000(wfm, header, ch_idx).ok()
+                }).collect();
+                Ok(results)
+            },
             WfmHeader::Tektronix(header) => {
                 Ok(vec![Self::get_channel_data_tektronix(wfm, header, 0).ok()])
             },
@@ -32,6 +38,46 @@ impl Parser {
                 Ok(vec![Self::get_channel_data_isf(wfm, header, 0).ok()])
             }
         }
+    }
+
+    pub fn get_channel_data_4000(
+        wfm: &WfmFile,
+        header: &WfmHeader4000,
+        channel_idx: usize,
+    ) -> anyhow::Result<Vec<f32>> {
+        if channel_idx > 3 {
+            return Err(anyhow::anyhow!("Channel must be between 1 and 4"));
+        }
+        
+        if !header.is_ch_enabled(channel_idx) {
+            return Err(anyhow::anyhow!("Channel {} is not enabled", channel_idx + 1));
+        }
+
+        let channel = &header.channels[channel_idx];
+        let points = header.mem_depth as usize;
+        
+        let data_start = header.channel_offsets[channel_idx] as usize;
+        if data_start + points > wfm.mmap.len() {
+            return Err(anyhow::anyhow!("Invalid channel data offset"));
+        }
+        
+        let raw_data = &wfm.mmap[data_start..data_start + points];
+        
+        let volt_div = if wfm.model_number.chars().nth(2) == Some('2') {
+            25.0
+        } else {
+            32.0
+        };
+        
+        let y_scale = channel.volt_signed() / volt_div;
+        let y_offset = channel.volt_offset;
+        let midpoint = 127.0f32;
+
+        let voltages: Vec<f32> = raw_data.par_iter().map(|&raw_byte| {
+            y_scale * (raw_byte as f32 - midpoint) - y_offset
+        }).collect();
+
+        Ok(voltages)
     }
 
     pub fn get_channel_data_isf(

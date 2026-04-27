@@ -2,12 +2,13 @@ use std::fs::File;
 use std::io::{Cursor, Seek, SeekFrom};
 use memmap2::Mmap;
 use binrw::{BinRead, Endian};
-use crate::structs::{FileHeader, WfmHeader1000Z, WfmHeader1000E, WfmHeader2000, FileHeader2000, TektronixStaticFileInfo, TektronixHeader, IsfHeader};
+use crate::structs::{FileHeader, WfmHeader1000Z, WfmHeader1000E, WfmHeader2000, FileHeader2000, WfmHeader4000, TektronixStaticFileInfo, TektronixHeader, IsfHeader};
 
 pub enum WfmHeader {
     Ds1000z(WfmHeader1000Z),
     Ds1000e(WfmHeader1000E),
     Ds2000(WfmHeader2000),
+    Ds4000(WfmHeader4000),
     Tektronix(TektronixHeader),
     Isf(IsfHeader),
 }
@@ -162,20 +163,29 @@ impl WfmFile {
         }
         
         if magic == [0xa5, 0xa5, 0x38, 0x00] {
-            // DS2000 family
-            let (file_header, wfm_header) = {
-                let mut cursor = Cursor::new(&mmap);
-                let file_header = FileHeader2000::read(&mut cursor)?;
+            // DS2000 and DS4000 families share this magic
+            let mut cursor = Cursor::new(&mmap);
+            let file_header = FileHeader2000::read(&mut cursor)?;
+            
+            if file_header.model_number.contains("4000") || file_header.model_number.contains("DS4") || file_header.model_number.contains("MSO4") {
+                cursor.set_position(44);
+                let wfm_header = WfmHeader4000::read(&mut cursor)?;
+                return Ok(WfmFile {
+                    mmap,
+                    model_number: file_header.model_number,
+                    firmware_version: file_header.firmware_version,
+                    wfm_header: WfmHeader::Ds4000(wfm_header),
+                });
+            } else {
                 cursor.set_position(56);
                 let wfm_header = WfmHeader2000::read(&mut cursor)?;
-                (file_header, wfm_header)
-            };
-            return Ok(WfmFile {
-                mmap,
-                model_number: file_header.model_number,
-                firmware_version: file_header.firmware_version,
-                wfm_header: WfmHeader::Ds2000(wfm_header),
-            });
+                return Ok(WfmFile {
+                    mmap,
+                    model_number: file_header.model_number,
+                    firmware_version: file_header.firmware_version,
+                    wfm_header: WfmHeader::Ds2000(wfm_header),
+                });
+            }
         }
         
         // Standard FileHeader based models (Z and newer)
