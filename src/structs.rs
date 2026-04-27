@@ -46,10 +46,6 @@ pub struct WfmHeader1000Z {
     pub setup_offset: u32,
     pub horizontal_size: u32,
     pub horizontal_offset: u32,
-    pub display_delay: u32,
-    pub display_address: u32,
-    pub display_fine: u32,
-    pub memory_address: u32,
 }
 
 #[binread]
@@ -97,17 +93,12 @@ pub struct WfmHeader1000E {
     #[br(pad_before = 1)]
     pub channels: [ChannelHeader1000E; 2],
     pub time_offset: u8,
-    #[br(pad_before = 1)]
-    pub time: TimeHeader1000E,
-    // We ignore the rest of the header for now because it's not needed for basic parsing
-    // and its size can vary or be complex.
 }
 
 impl WfmHeader1000E {
     pub fn ch1_skip(&self) -> usize { if self.roll_stop == 0 { 0 } else { (self.roll_stop + 2) as usize } }
     pub fn ch1_points(&self) -> usize { (self.ch1_memory_depth as usize).saturating_sub(self.ch1_skip()) }
     pub fn ch2_points(&self) -> usize {
-        // ch2_memory_depth is usually the same as ch1_memory_depth for enabled channels
         let ch2_mem_depth = self.ch1_memory_depth; 
         (ch2_mem_depth as usize).saturating_sub(self.ch1_skip()) 
     }
@@ -130,36 +121,6 @@ pub struct ChannelHeader1000E {
     pub shift_measured: i16,
 }
 
-#[binread]
-#[derive(Debug)]
-#[br(little)]
-pub struct TimeHeader1000E {
-    pub scale_display: i64,
-    pub offset_display: i64,
-    pub sample_rate_hz: f32,
-    pub scale_measured: i64,
-    pub offset_measured: i64,
-}
-
-#[binread]
-#[derive(Debug)]
-#[br(little)]
-pub struct TriggerHeader1000E {
-    pub mode: u8,
-    pub source: u8,
-    pub coupling: u8,
-    pub sweep: u8,
-    #[br(pad_before = 1)]
-    pub sens: f32,
-    pub holdoff: f32,
-    pub level: f32,
-    pub direct: u8,
-    pub pulse_type: u8,
-    #[br(pad_before = 2)]
-    pub pulse_width: f32,
-    pub slope_type: u8,
-}
-
 // --- DS2000 ---
 #[binread]
 #[derive(Debug)]
@@ -170,9 +131,6 @@ pub struct FileHeader2000 {
     pub model_number: String,
     #[br(map = |s: [u8; 20]| String::from_utf8_lossy(&s).trim_end_matches('\0').to_string())]
     pub firmware_version: String,
-    pub block_num: [u8; 2],
-    pub file_version: u16,
-    pub unused_1: [u8; 8],
 }
 
 #[binread]
@@ -205,15 +163,9 @@ pub struct WfmHeader2000 {
 }
 
 impl WfmHeader2000 {
-    // b4 unused, b1 ch4, b1 ch3, b1 ch2, b1 ch1 in first byte.
-    // Kaitai parses bits MSB to LSB or LSB to MSB?
-    // In Kaitai, type: b1 usually means bits are consumed from MSB to LSB inside the byte.
-    // But since enabled_mask is u16 (little-endian), we can just rely on the fallback from `channels` enabled_temp, which is what rigolWFM uses!
     pub fn is_ch_enabled(&self, ch: usize) -> bool { self.channels[ch].is_enabled() }
     
-    // For interwoven, rigolWFM says: `enabled.interwoven ? wfm_len/2 : wfm_len`
-    // Let's just check the interwoven bit. It's the last bit of the second byte.
-    pub fn interwoven(&self) -> bool { (self.enabled_mask >> 8) & 1 != 0 } // Approximated, might need bit tuning
+    pub fn interwoven(&self) -> bool { (self.enabled_mask >> 8) & 1 != 0 }
     
     pub fn raw_depth(&self) -> usize {
         let len = self.wfm_len as usize;
@@ -267,13 +219,6 @@ pub struct TektronixStaticFileInfo {
     pub num_bytes_to_eof: i32,
     pub num_bytes_per_point: u8,
     pub byte_offset_to_curve_buffer: i32,
-    pub horiz_zoom_scale_factor: i32,
-    pub horiz_zoom_position: f32,
-    pub vert_zoom_scale_factor: f64,
-    pub vert_zoom_position: f32,
-    pub waveform_label: [u8; 32],
-    pub n_frames: u32,
-    pub wfm_header_size: u16,
 }
 
 pub struct TektronixHeader {

@@ -47,11 +47,7 @@ impl Parser {
         let points = header.nr_pt as usize;
         let bpp = header.byt_nr as usize;
 
-        if points * bpp > raw_data.len() {
-            // Some ISF files report larger NR_PT than actual data length
-            // We should use the actual available length if it's smaller, but here we just bound it
-        }
-        
+        // Some ISF files report larger NR_PT than actual data length
         let actual_points = std::cmp::min(points, raw_data.len() / bpp);
 
         let is_le = header.byt_or == "LSB";
