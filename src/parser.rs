@@ -5,46 +5,50 @@ use rayon::prelude::*;
 pub struct Parser;
 
 impl Parser {
-    pub fn get_all_channels(wfm: &WfmFile) -> anyhow::Result<Vec<Option<Vec<f32>>>> {
+
+    pub fn apply_slice(total_points: usize, start_idx: Option<usize>, length: Option<usize>) -> (usize, usize) {
+        let start = start_idx.unwrap_or(0).min(total_points);
+        let rem = total_points - start;
+        let len = length.unwrap_or(rem).min(rem);
+        (start, len)
+    }
+
+    pub fn get_all_channels(wfm: &WfmFile, start_idx: Option<usize>, length: Option<usize>) -> anyhow::Result<Vec<Option<Vec<f32>>>> {
         match &wfm.wfm_header {
             WfmHeader::Ds1000z(header) => {
                 let results: Vec<_> = (0..4).into_par_iter().map(|ch_idx| {
-                    Self::get_channel_data_1000z(wfm, header, ch_idx).ok()
+                    Self::get_channel_data_1000z(wfm, header, ch_idx, start_idx, length).ok()
                 }).collect();
                 Ok(results)
             },
             WfmHeader::Ds1000e(header) => {
                 let results: Vec<_> = (0..2).into_par_iter().map(|ch_idx| {
-                    Self::get_channel_data_1000e(wfm, header, ch_idx).ok()
+                    Self::get_channel_data_1000e(wfm, header, ch_idx, start_idx, length).ok()
                 }).collect();
                 Ok(results)
             },
             WfmHeader::Ds2000(header) => {
                 let results: Vec<_> = (0..4).into_par_iter().map(|ch_idx| {
-                    Self::get_channel_data_2000(wfm, header, ch_idx).ok()
+                    Self::get_channel_data_2000(wfm, header, ch_idx, start_idx, length).ok()
                 }).collect();
                 Ok(results)
             },
             WfmHeader::Ds4000(header) => {
                 let results: Vec<_> = (0..4).into_par_iter().map(|ch_idx| {
-                    Self::get_channel_data_4000(wfm, header, ch_idx).ok()
+                    Self::get_channel_data_4000(wfm, header, ch_idx, start_idx, length).ok()
                 }).collect();
                 Ok(results)
             },
             WfmHeader::Tektronix(header) => {
-                Ok(vec![Self::get_channel_data_tektronix(wfm, header, 0).ok()])
+                Ok(vec![Self::get_channel_data_tektronix(wfm, header, 0, start_idx, length).ok()])
             },
             WfmHeader::Isf(header) => {
-                Ok(vec![Self::get_channel_data_isf(wfm, header, 0).ok()])
+                Ok(vec![Self::get_channel_data_isf(wfm, header, 0, start_idx, length).ok()])
             }
         }
     }
 
-    pub fn get_channel_data_4000(
-        wfm: &WfmFile,
-        header: &WfmHeader4000,
-        channel_idx: usize,
-    ) -> anyhow::Result<Vec<f32>> {
+    pub fn get_channel_data_4000(wfm: &WfmFile, header: &WfmHeader4000, channel_idx: usize, start_idx: Option<usize>, length: Option<usize>) -> anyhow::Result<Vec<f32>> {
         if channel_idx > 3 {
             return Err(anyhow::anyhow!("Channel must be between 1 and 4"));
         }
@@ -61,7 +65,8 @@ impl Parser {
             return Err(anyhow::anyhow!("Invalid channel data offset"));
         }
         
-        let raw_data = &wfm.mmap[data_start..data_start + points];
+        let (start_pt, slice_len) = Self::apply_slice(points, start_idx, length);
+        let raw_data = &wfm.mmap[data_start + start_pt .. data_start + start_pt + slice_len];
         
         let volt_div = if wfm.model_number.chars().nth(2) == Some('2') {
             25.0
@@ -80,11 +85,7 @@ impl Parser {
         Ok(voltages)
     }
 
-    pub fn get_channel_data_isf(
-        wfm: &WfmFile,
-        header: &IsfHeader,
-        channel_idx: usize,
-    ) -> anyhow::Result<Vec<f32>> {
+    pub fn get_channel_data_isf(wfm: &WfmFile, header: &IsfHeader, channel_idx: usize, start_idx: Option<usize>, length: Option<usize>) -> anyhow::Result<Vec<f32>> {
         if channel_idx > 0 {
             return Err(anyhow::anyhow!("ISF files typically contain only 1 channel"));
         }
@@ -95,13 +96,15 @@ impl Parser {
 
         // Some ISF files report larger NR_PT than actual data length
         let actual_points = std::cmp::min(points, raw_data.len() / bpp);
+        let (start_pt, slice_len) = Self::apply_slice(actual_points, start_idx, length);
 
         let is_le = header.byt_or == "LSB";
         let y_scale = header.ymult;
         let y_offset = header.yzero;
         let y_adc_offset = header.yoff;
 
-        let voltages: Vec<f32> = (0..actual_points).into_par_iter().map(|i| {
+        let voltages: Vec<f32> = (0..slice_len).into_par_iter().map(|i| {
+            let i = start_pt + i;
             let raw_val = if bpp == 1 {
                 raw_data[i] as i8 as f32
             } else {
@@ -117,11 +120,7 @@ impl Parser {
         Ok(voltages)
     }
 
-    pub fn get_channel_data_2000(
-        wfm: &WfmFile,
-        header: &WfmHeader2000,
-        channel_idx: usize,
-    ) -> anyhow::Result<Vec<f32>> {
+    pub fn get_channel_data_2000(wfm: &WfmFile, header: &WfmHeader2000, channel_idx: usize, start_idx: Option<usize>, length: Option<usize>) -> anyhow::Result<Vec<f32>> {
         if channel_idx > 3 {
             return Err(anyhow::anyhow!("Channel must be between 1 and 4"));
         }
@@ -148,8 +147,10 @@ impl Parser {
             let raw_a = &wfm.mmap[offset_a..offset_a + half_points];
             let raw_b = &wfm.mmap[offset_b..offset_b + half_points];
             
+            let (start_pt, slice_len) = Self::apply_slice(points, start_idx, length);
             // Parallelize the interwoven reconstruction
-            let voltages: Vec<f32> = (0..points).into_par_iter().map(|i| {
+            let voltages: Vec<f32> = (0..slice_len).into_par_iter().map(|idx| {
+                let i = start_pt + idx;
                 let raw_byte = if i % 2 == 0 {
                     raw_a[i / 2]
                 } else {
@@ -166,7 +167,8 @@ impl Parser {
             return Err(anyhow::anyhow!("Invalid channel data offset"));
         }
         
-        let raw_data = &wfm.mmap[data_start..data_start + points];
+        let (start_pt, slice_len) = Self::apply_slice(points, start_idx, length);
+        let raw_data = &wfm.mmap[data_start + start_pt .. data_start + start_pt + slice_len];
 
         // Parallel map for contiguous data
         let voltages: Vec<f32> = raw_data.par_iter().map(|&raw_byte| {
@@ -176,11 +178,7 @@ impl Parser {
         Ok(voltages)
     }
 
-    pub fn get_channel_data_tektronix(
-        wfm: &WfmFile,
-        header: &TektronixHeader,
-        channel_idx: usize,
-    ) -> anyhow::Result<Vec<f32>> {
+    pub fn get_channel_data_tektronix(wfm: &WfmFile, header: &TektronixHeader, channel_idx: usize, start_idx: Option<usize>, length: Option<usize>) -> anyhow::Result<Vec<f32>> {
         if channel_idx > 0 {
             return Err(anyhow::anyhow!("Tektronix WFM typically contains only 1 channel"));
         }
@@ -200,8 +198,10 @@ impl Parser {
         let y_scale = header.y_scale as f32;
         let y_offset = header.y_offset as f32;
         let is_le = header.static_info.byte_order == 0x0f0f;
+        let (start_pt, slice_len) = Self::apply_slice(points, start_idx, length);
 
-        let voltages: Vec<f32> = (0..points).into_par_iter().map(|i| {
+        let voltages: Vec<f32> = (0..slice_len).into_par_iter().map(|idx| {
+            let i = start_pt + idx;
             let raw_val = if bpp == 1 {
                 raw_data[i] as i8 as f32
             } else if bpp == 2 {
@@ -223,11 +223,7 @@ impl Parser {
         Ok(voltages)
     }
 
-    pub fn get_channel_data_1000z(
-        wfm: &WfmFile,
-        header: &WfmHeader1000Z,
-        channel_idx: usize,
-    ) -> anyhow::Result<Vec<f32>> {
+    pub fn get_channel_data_1000z(wfm: &WfmFile, header: &WfmHeader1000Z, channel_idx: usize, start_idx: Option<usize>, length: Option<usize>) -> anyhow::Result<Vec<f32>> {
         let channel = &header.channels[channel_idx];
         if channel.enabled_val == 0 {
             return Err(anyhow::anyhow!("Channel {} is not enabled", channel_idx + 1));
@@ -261,7 +257,9 @@ impl Parser {
         let y_offset = channel.shift - vertical_bias;
         let midpoint = 127.0f32;
 
-        let voltages: Vec<f32> = (0..points).into_par_iter().map(|i| {
+        let (start_pt, slice_len) = Self::apply_slice(points, start_idx, length);
+        let voltages: Vec<f32> = (0..slice_len).into_par_iter().map(|idx| {
+            let i = start_pt + idx;
             let raw_byte = raw_data[i * stride + offset] as f32;
             y_scale * (midpoint - raw_byte) - y_offset
         }).collect();
@@ -269,11 +267,7 @@ impl Parser {
         Ok(voltages)
     }
 
-    pub fn get_channel_data_1000e(
-        wfm: &WfmFile,
-        header: &WfmHeader1000E,
-        channel_idx: usize,
-    ) -> anyhow::Result<Vec<f32>> {
+    pub fn get_channel_data_1000e(wfm: &WfmFile, header: &WfmHeader1000E, channel_idx: usize, start_idx: Option<usize>, length: Option<usize>) -> anyhow::Result<Vec<f32>> {
         if channel_idx > 1 {
             return Err(anyhow::anyhow!("DS1000E only has 2 channels"));
         }
@@ -294,6 +288,7 @@ impl Parser {
         let offset = if channel_idx == 0 { 0 } else { ch1_total };
 
         let raw_data = &wfm.mmap[data_start + offset..];
+        let (start_pt, slice_len) = Self::apply_slice(points, start_idx, length);
 
         let volt_per_div = (channel.scale_measured as f32 / 1_000_000.0) * channel.probe_value;
         let volt_per_div = if channel.inverted_m_val != 0 { -volt_per_div } else { volt_per_div };
@@ -302,7 +297,7 @@ impl Parser {
         let y_offset = (channel.shift_measured as f32) * (volt_per_div / 25.0);
         let midpoint = 125.0f32;
 
-        let voltages: Vec<f32> = raw_data[..points].par_iter().map(|&raw_byte| {
+        let voltages: Vec<f32> = raw_data[start_pt..start_pt + slice_len].par_iter().map(|&raw_byte| {
             y_scale * (midpoint - raw_byte as f32) - y_offset
         }).collect();
 

@@ -85,12 +85,19 @@ wfm = WfmOxide("DS1054Z-Capture.wfm")
 
 print(f"Model: {wfm.model}")
 print(f"Firmware: {wfm.firmware}")
+print(f"Enabled Channels: {wfm.enabled_channels}")
 
 # Extract channel data (Allocates NumPy array and applies Volts/Div conversion)
 try:
+    # Extract the entire channel
     ch1_volts = wfm.get_channel_data(1) 
     print(f"CH1 Points: {len(ch1_volts)}")
     print(f"CH1 Max Voltage: {np.max(ch1_volts)} V")
+    
+    # You can also extract a specific slice to save time and memory on massive files
+    # E.g., Extracting 10,000 points starting from index 5,000
+    ch1_slice = wfm.get_channel_data(1, start=5000, length=10000)
+    
 except ValueError as e:
     # Handles cases where a channel was disabled during capture
     print(f"Error: {e}") 

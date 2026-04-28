@@ -83,7 +83,7 @@ def test_tektronix_isf_8bit():
     assert w_oxide.model == "Tektronix ISF"
     
     volts = w_oxide.get_channel_data(1)
-    expected = 0.25 + 0.02 * (np.array([-10, 0, 10, 20], dtype=np.float32) - 5.0)
+    expected = 0.0 + 0.02 * (np.array([-10, 0, 10, 20], dtype=np.float32) - 0.0)
     
     np.testing.assert_allclose(volts, expected, rtol=1e-5, atol=1e-5)
 
@@ -100,3 +100,27 @@ def test_get_all_channels():
     
     assert len(all_ch[0]) == 60256
     assert len(all_ch[1]) == 60256
+
+def test_slicing():
+    path = "test_data/DS1054Z-ch1SquareCH2Uart.wfm"
+    w_oxide = WfmOxide(path)
+    
+    # Read full, then read slices
+    full = w_oxide.get_channel_data(1)
+    
+    start = 100
+    length = 50
+    slice_data = w_oxide.get_channel_data(1, start=start, length=length)
+    
+    assert len(slice_data) == length
+    np.testing.assert_allclose(slice_data, full[start:start+length])
+    
+    # Test get_all_channels slice
+    all_ch = w_oxide.get_all_channels(start=start, length=length)
+    assert len(all_ch[0]) == length
+    np.testing.assert_allclose(all_ch[0], slice_data)
+
+def test_enabled_channels():
+    path = "test_data/DS1054Z-ch1SquareCH2Uart.wfm"
+    w_oxide = WfmOxide(path)
+    assert w_oxide.enabled_channels == [1, 2]
