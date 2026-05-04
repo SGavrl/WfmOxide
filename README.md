@@ -1,5 +1,10 @@
 # WfmOxide
 
+[![PyPI version](https://img.shields.io/pypi/v/wfm-oxide?color=orange)](https://pypi.org/project/wfm-oxide/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/wfm-oxide)](https://pypi.org/project/wfm-oxide/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/SGavrl/WfmOxide/actions/workflows/CI.yml/badge.svg)](https://github.com/SGavrl/WfmOxide/actions)
+
 **WfmOxide** is a zero-copy parser for proprietary oscilloscope binary files (e.g., Rigol `.wfm`, Tektronix). Written in Rust with PyO3 bindings, it provides a high-performance backend alternative to pure-Python implementations like [RigolWFM](https://github.com/scottprahl/RigolWFM), optimized for deep-memory data pipelines.
 
 ![Performance Benchmark Comparison](docs/global_benchmark_results.png)
@@ -51,7 +56,7 @@ pip install wfm-oxide
 For development purposes or deployment on unsupported architectures, WfmOxide can be compiled directly from source using `maturin`.
 
 ```bash
-git clone [https://github.com/yourusername/WfmOxide.git](https://github.com/yourusername/WfmOxide.git)
+git clone https://github.com/SGavrl/WfmOxide.git
 cd WfmOxide
 
 python3 -m venv .venv
