@@ -26,6 +26,7 @@ test = [
 features = ["pyo3/extension-module"]
 python-source = "python"
 module-name = "wfm_oxide._core"
+manifest-path = "crates/wfm_oxide/Cargo.toml"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

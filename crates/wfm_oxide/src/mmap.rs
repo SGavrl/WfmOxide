@@ -3,6 +3,7 @@ use std::io::{Cursor, Seek, SeekFrom};
 use memmap2::Mmap;
 use binrw::{BinRead, Endian};
 use crate::dho::{self, DhoHeader};
+use crate::parser::Parser;
 use crate::structs::{FileHeader, WfmHeader1000Z, WfmHeader1000E, WfmHeader2000, FileHeader2000, WfmHeader4000, TektronixStaticFileInfo, TektronixHeader, IsfHeader};
 
 pub enum WfmHeader {
@@ -221,5 +222,55 @@ impl WfmFile {
             firmware_version: file_header.firmware_version,
             wfm_header,
         })
+    }
+
+    /// 1-based channel numbers that contain data in this capture.
+    pub fn enabled_channels(&self) -> Vec<usize> {
+        let mut enabled = Vec::new();
+        match &self.wfm_header {
+            WfmHeader::Ds1000z(header) => {
+                for i in 0..4 { if header.is_ch_enabled(i) { enabled.push(i + 1); } }
+            },
+            WfmHeader::Ds1000e(header) => {
+                if header.channels[0].enabled_val != 0 { enabled.push(1); }
+                if header.channels[1].enabled_val != 0 { enabled.push(2); }
+            },
+            WfmHeader::Ds2000(header) => {
+                for i in 0..4 { if header.is_ch_enabled(i) { enabled.push(i + 1); } }
+            },
+            WfmHeader::Ds4000(header) => {
+                for i in 0..4 { if header.is_ch_enabled(i) { enabled.push(i + 1); } }
+            },
+            WfmHeader::Tektronix(_) | WfmHeader::Isf(_) => {
+                enabled.push(1);
+            },
+            WfmHeader::Dho(header) => {
+                for i in 0..4 { if header.is_ch_enabled(i) { enabled.push(i + 1); } }
+            }
+        }
+        enabled
+    }
+
+    /// Decode a single channel into volts. `channel` is 1-based.
+    pub fn extract_channel(&self, channel: usize, start: Option<usize>, length: Option<usize>) -> anyhow::Result<Vec<f32>> {
+        if channel < 1 {
+            return Err(anyhow::anyhow!("Channel index must be >= 1"));
+        }
+        let ch_idx = channel - 1;
+        match &self.wfm_header {
+            WfmHeader::Ds1000z(h)   => Parser::get_channel_data_1000z(self, h, ch_idx, start, length),
+            WfmHeader::Ds1000e(h)   => Parser::get_channel_data_1000e(self, h, ch_idx, start, length),
+            WfmHeader::Ds2000(h)    => Parser::get_channel_data_2000(self, h, ch_idx, start, length),
+            WfmHeader::Ds4000(h)    => Parser::get_channel_data_4000(self, h, ch_idx, start, length),
+            WfmHeader::Tektronix(h) => Parser::get_channel_data_tektronix(self, h, ch_idx, start, length),
+            WfmHeader::Isf(h)       => Parser::get_channel_data_isf(self, h, ch_idx, start, length),
+            WfmHeader::Dho(h)       => Parser::get_channel_data_dho(self, h, ch_idx, start, length),
+        }
+    }
+
+    /// Decode every channel slot. Position i in the returned vec is `None` when
+    /// channel i+1 is not enabled.
+    pub fn extract_all_channels(&self, start: Option<usize>, length: Option<usize>) -> anyhow::Result<Vec<Option<Vec<f32>>>> {
+        Parser::get_all_channels(self, start, length)
     }
 }

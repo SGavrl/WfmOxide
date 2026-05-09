@@ -1,24 +1,17 @@
-[package]
-name = "wfm_oxide"
-version = "0.2.0"
+[workspace]
+resolver = "2"
+members = [
+    "crates/wfm_oxide",
+    "crates/wfm_oxide_cli",
+]
+
+[workspace.package]
 edition = "2021"
+version = "0.2.0"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[lib]
-name = "wfm_oxide"
-crate-type = ["cdylib"]
-
-[dependencies]
-# PyO3 handles the heavy lifting for the Stable ABI
-pyo3 = { version = "0.23.5", features = ["extension-module", "abi3-py38"] }
-
-# Keep numpy simple; it will detect the pyo3 features automatically
-numpy = "0.23.0"
-
-# Standard utility crates
+[workspace.dependencies]
+anyhow = "1.0.75"
 rayon = "1.10.0"
 memmap2 = "0.9.3"
 binrw = "0.13.3"
-anyhow = "1.0.75"
 flate2 = "1.0"
