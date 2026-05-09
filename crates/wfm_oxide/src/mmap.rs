@@ -273,4 +273,78 @@ impl WfmFile {
     pub fn extract_all_channels(&self, start: Option<usize>, length: Option<usize>) -> anyhow::Result<Vec<Option<Vec<f32>>>> {
         Parser::get_all_channels(self, start, length)
     }
+
+    /// Sample count for the given channel, derived from the header without decoding.
+    pub fn channel_sample_count(&self, channel: usize) -> anyhow::Result<usize> {
+        if channel < 1 {
+            return Err(anyhow::anyhow!("Channel index must be >= 1"));
+        }
+        let ch_idx = channel - 1;
+        let count = match &self.wfm_header {
+            WfmHeader::Ds1000z(h) => {
+                if ch_idx > 3 || !h.is_ch_enabled(ch_idx) {
+                    return Err(anyhow::anyhow!("Channel {} is not enabled", channel));
+                }
+                h.points() as usize
+            }
+            WfmHeader::Ds1000e(h) => {
+                if ch_idx > 1 {
+                    return Err(anyhow::anyhow!("DS1000E only has 2 channels"));
+                }
+                if h.channels[ch_idx].enabled_val == 0 {
+                    return Err(anyhow::anyhow!("Channel {} is not enabled", channel));
+                }
+                if ch_idx == 0 { h.ch1_points() } else { h.ch2_points() }
+            }
+            WfmHeader::Ds2000(h) => {
+                if ch_idx > 3 {
+                    return Err(anyhow::anyhow!("Channel must be between 1 and 4"));
+                }
+                if !h.is_ch_enabled(ch_idx) {
+                    return Err(anyhow::anyhow!("Channel {} is not enabled", channel));
+                }
+                h.wfm_len as usize
+            }
+            WfmHeader::Ds4000(h) => {
+                if ch_idx > 3 {
+                    return Err(anyhow::anyhow!("Channel must be between 1 and 4"));
+                }
+                if !h.is_ch_enabled(ch_idx) {
+                    return Err(anyhow::anyhow!("Channel {} is not enabled", channel));
+                }
+                h.mem_depth as usize
+            }
+            WfmHeader::Tektronix(h) => {
+                if ch_idx > 0 {
+                    return Err(anyhow::anyhow!("Tektronix WFM has only 1 channel"));
+                }
+                let base = h.static_info.byte_offset_to_curve_buffer as usize;
+                let data_start = base + h.data_start_offset as usize;
+                let data_end = base + h.postcharge_start_offset as usize;
+                let bpp = h.static_info.num_bytes_per_point as usize;
+                if bpp == 0 || data_end <= data_start {
+                    return Err(anyhow::anyhow!("Invalid curve buffer offsets"));
+                }
+                (data_end - data_start) / bpp
+            }
+            WfmHeader::Isf(h) => {
+                if ch_idx > 0 {
+                    return Err(anyhow::anyhow!("ISF has only 1 channel"));
+                }
+                let bpp = (h.byt_nr as usize).max(1);
+                let raw_len = self.mmap.len().saturating_sub(h.data_offset);
+                std::cmp::min(h.nr_pt as usize, raw_len / bpp)
+            }
+            WfmHeader::Dho(h) => {
+                if ch_idx > 3 {
+                    return Err(anyhow::anyhow!("Channel must be between 1 and 4"));
+                }
+                if !h.is_ch_enabled(ch_idx) {
+                    return Err(anyhow::anyhow!("Channel {} is not enabled", channel));
+                }
+                h.n_pts_per_ch
+            }
+        };
+        Ok(count)
+    }
 }

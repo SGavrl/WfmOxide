@@ -72,8 +72,8 @@ fn cmd_info(path: &Path) -> Result<()> {
     let channels = wfm.enabled_channels();
     println!("Channels: {} enabled ({})", channels.len(), format_channel_list(&channels));
     for ch in &channels {
-        match wfm.extract_channel(*ch, None, None) {
-            Ok(v) => println!("  CH{}: {} samples", ch, v.len()),
+        match wfm.channel_sample_count(*ch) {
+            Ok(n) => println!("  CH{}: {} samples", ch, n),
             Err(e) => println!("  CH{}: <error: {}>", ch, e),
         }
     }
@@ -214,9 +214,11 @@ fn write_npy(output: &Path, channels: &[usize], data: &[Vec<f32>], n_samples: us
     w.write_all(&(header_bytes.len() as u16).to_le_bytes())?;
     w.write_all(header_bytes)?;
 
+    // Always emit little-endian to match the '<f4' dtype string regardless of host byte order.
     if channels.len() == 1 {
-        let bytes: &[u8] = f32_slice_as_bytes(&data[0]);
-        w.write_all(bytes)?;
+        for &v in &data[0] {
+            w.write_all(&v.to_le_bytes())?;
+        }
     } else {
         // Interleave row-major: row i is [ch0[i], ch1[i], ...].
         for i in 0..n_samples {
@@ -227,9 +229,4 @@ fn write_npy(output: &Path, channels: &[usize], data: &[Vec<f32>], n_samples: us
     }
     w.flush()?;
     Ok(())
-}
-
-fn f32_slice_as_bytes(slice: &[f32]) -> &[u8] {
-    let len = std::mem::size_of_val(slice);
-    unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, len) }
 }

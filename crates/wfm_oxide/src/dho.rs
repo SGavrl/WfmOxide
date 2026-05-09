@@ -201,7 +201,7 @@ fn extract_calibration(blocks: &[ParsedBlock]) -> (DhoFamily, [Option<Affine>; 4
 }
 
 fn parse_model(blocks: &[ParsedBlock]) -> String {
-    for b in &blocks[..] {
+    for b in blocks {
         let text = String::from_utf8_lossy(&b.decompressed);
         for prefix in ["DHO", "MSO"] {
             if let Some(idx) = text.find(prefix) {
