@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -21,14 +22,22 @@ enum Cmd {
     Info {
         /// Path to a .wfm or .isf capture.
         path: PathBuf,
+        /// Print machine-readable JSON instead of the human-friendly summary.
+        #[arg(long)]
+        json: bool,
     },
-    /// Convert a waveform file into CSV or NPY.
+    /// Convert one or more waveform files into CSV or NPY.
     Convert {
-        /// Path to a .wfm or .isf capture.
-        path: PathBuf,
-        /// Output file. Format is inferred from the extension when --format is omitted.
+        /// Paths to one or more .wfm or .isf captures.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Output file. Required when converting a single capture; rejected when --out-dir is given.
         #[arg(short, long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
+        /// Directory to write outputs into when converting multiple captures. Each input
+        /// becomes <out-dir>/<stem>.<ext> with extension inferred from --format (or --output for single inputs).
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
         /// Extract only the named 1-based channel. Omit to extract every enabled channel.
         #[arg(short, long)]
         channel: Option<usize>,
@@ -57,34 +66,85 @@ enum Format {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Cmd::Info { path } => cmd_info(&path),
-        Cmd::Convert { path, output, channel, start, length, format, no_time } => {
-            let format = match format {
-                Some(f) => f,
-                None => infer_format(&output)?,
-            };
-            cmd_convert(&path, &output, channel, start, length, format, no_time)
+        Cmd::Info { path, json } => cmd_info(&path, json),
+        Cmd::Convert { paths, output, out_dir, channel, start, length, format, no_time } => {
+            cmd_convert(paths, output, out_dir, channel, start, length, format, no_time)
         }
     }
 }
 
-fn cmd_info(path: &Path) -> Result<()> {
+fn cmd_info(path: &Path, json: bool) -> Result<()> {
     let wfm = open_wfm(path)?;
+    let channels = wfm.enabled_channels();
+    let time = wfm.time_axis();
+    let n_pts_first = channels
+        .first()
+        .and_then(|ch| wfm.channel_sample_count(*ch).ok())
+        .unwrap_or(0);
+
+    if json {
+        #[derive(Serialize)]
+        struct TimeAxisOut { x_origin: f64, x_increment: f64, sample_rate: f64 }
+        #[derive(Serialize)]
+        struct ChannelOut {
+            channel: usize,
+            samples: usize,
+            vertical_scale: Option<f32>,
+            vertical_offset: Option<f32>,
+            inverted: Option<bool>,
+            coupling: Option<&'static str>,
+            probe_ratio: Option<f32>,
+        }
+        #[derive(Serialize)]
+        struct InfoOut<'a> {
+            file: String,
+            model: &'a str,
+            firmware: &'a str,
+            enabled_channels: &'a [usize],
+            time_axis: Option<TimeAxisOut>,
+            channels: Vec<ChannelOut>,
+        }
+
+        let channels_out: Vec<ChannelOut> = channels.iter().map(|&ch| {
+            let n = wfm.channel_sample_count(ch).unwrap_or(0);
+            let meta = wfm.channel_metadata(ch);
+            ChannelOut {
+                channel: ch,
+                samples: n,
+                vertical_scale: meta.as_ref().map(|m| m.vertical_scale),
+                vertical_offset: meta.as_ref().map(|m| m.vertical_offset),
+                inverted: meta.as_ref().map(|m| m.inverted),
+                coupling: meta.as_ref().and_then(|m| m.coupling),
+                probe_ratio: meta.as_ref().and_then(|m| m.probe_ratio),
+            }
+        }).collect();
+        let out = InfoOut {
+            file: path.display().to_string(),
+            model: &wfm.model_number,
+            firmware: &wfm.firmware_version,
+            enabled_channels: &channels,
+            time_axis: time.map(|t| TimeAxisOut {
+                x_origin: t.x_origin,
+                x_increment: t.x_increment,
+                sample_rate: t.sample_rate(),
+            }),
+            channels: channels_out,
+        };
+        let json_text = serde_json::to_string_pretty(&out)?;
+        println!("{}", json_text);
+        return Ok(());
+    }
+
     println!("File:     {}", path.display());
     println!("Model:    {}", wfm.model_number);
     println!("Firmware: {}", wfm.firmware_version);
-    let channels = wfm.enabled_channels();
     println!("Channels: {} enabled ({})", channels.len(), format_channel_list(&channels));
 
-    if let Some(t) = wfm.time_axis() {
-        let n_pts = channels
-            .first()
-            .and_then(|ch| wfm.channel_sample_count(*ch).ok())
-            .unwrap_or(0);
+    if let Some(t) = time {
         println!("Sample rate: {}", format_si(t.sample_rate(), "Sa/s"));
         println!("Sample step: {}", format_si(t.x_increment, "s"));
-        if n_pts > 0 {
-            println!("Capture:     {} ({} samples)", format_si(n_pts as f64 * t.x_increment, "s"), n_pts);
+        if n_pts_first > 0 {
+            println!("Capture:     {} ({} samples)", format_si(n_pts_first as f64 * t.x_increment, "s"), n_pts_first);
         }
         println!("Time origin: {}", format_si(t.x_origin, "s"));
     } else {
@@ -92,9 +152,27 @@ fn cmd_info(path: &Path) -> Result<()> {
     }
 
     for ch in &channels {
-        match wfm.channel_sample_count(*ch) {
-            Ok(n) => println!("  CH{}: {} samples", ch, n),
-            Err(e) => println!("  CH{}: <error: {}>", ch, e),
+        let n = wfm.channel_sample_count(*ch).unwrap_or(0);
+        match wfm.channel_metadata(*ch) {
+            Some(m) => {
+                let coupling = m.coupling.unwrap_or("?");
+                let probe = m
+                    .probe_ratio
+                    .map(|r| format!("{}x", r))
+                    .unwrap_or_else(|| "?".to_string());
+                let inv = if m.inverted { ", inverted" } else { "" };
+                println!(
+                    "  CH{}: {} samples, {}/div, offset {}, coupling {}, probe {}{}",
+                    ch,
+                    n,
+                    format_si(m.vertical_scale as f64, "V"),
+                    format_si(m.vertical_offset as f64, "V"),
+                    coupling,
+                    probe,
+                    inv,
+                );
+            }
+            None => println!("  CH{}: {} samples", ch, n),
         }
     }
     Ok(())
@@ -117,6 +195,52 @@ fn format_si(value: f64, unit: &str) -> String {
 }
 
 fn cmd_convert(
+    paths: Vec<PathBuf>,
+    output: Option<PathBuf>,
+    out_dir: Option<PathBuf>,
+    channel: Option<usize>,
+    start: Option<usize>,
+    length: Option<usize>,
+    format: Option<Format>,
+    no_time: bool,
+) -> Result<()> {
+    if paths.len() > 1 && output.is_some() {
+        bail!("--output is only valid with a single input; use --out-dir for batches");
+    }
+    if paths.len() == 1 && out_dir.is_none() && output.is_none() {
+        bail!("missing --output (single input) or --out-dir (batch)");
+    }
+    if let Some(dir) = out_dir.as_ref() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+
+    for path in &paths {
+        let resolved_format = match format {
+            Some(f) => f,
+            None => {
+                if let Some(o) = &output { infer_format(o)? }
+                else { bail!("--format is required when batch-converting without an inferable extension") }
+            }
+        };
+        let resolved_output = match (&output, &out_dir) {
+            (Some(o), _) => o.clone(),
+            (None, Some(dir)) => {
+                let stem = path.file_stem()
+                    .ok_or_else(|| anyhow!("cannot derive stem from {}", path.display()))?;
+                dir.join(stem).with_extension(format_extension(resolved_format))
+            }
+            (None, None) => unreachable!("validated above"),
+        };
+        convert_one(path, &resolved_output, channel, start, length, resolved_format, no_time)?;
+    }
+    Ok(())
+}
+
+fn format_extension(f: Format) -> &'static str {
+    match f { Format::Csv => "csv", Format::Npy => "npy" }
+}
+
+fn convert_one(
     path: &Path,
     output: &Path,
     channel: Option<usize>,

@@ -7,7 +7,7 @@ pub mod parser;
 pub mod sample;
 pub mod structs;
 
-pub use mmap::{TimeAxis, WfmFile, WfmHeader};
+pub use mmap::{ChannelMeta, TimeAxis, WfmFile, WfmHeader};
 
 #[pyclass]
 struct WfmOxide {
@@ -52,6 +52,21 @@ impl WfmOxide {
     #[getter]
     fn sample_rate(&self) -> Option<f64> {
         self.inner.time_axis().map(|t| t.sample_rate())
+    }
+
+    fn channel_metadata<'py>(&self, py: Python<'py>, channel: usize) -> PyResult<Option<Bound<'py, pyo3::types::PyDict>>> {
+        use pyo3::types::PyDict;
+        let Some(meta) = self.inner.channel_metadata(channel) else {
+            return Ok(None);
+        };
+        let d = PyDict::new(py);
+        d.set_item("channel", meta.channel)?;
+        d.set_item("vertical_scale", meta.vertical_scale)?;
+        d.set_item("vertical_offset", meta.vertical_offset)?;
+        d.set_item("inverted", meta.inverted)?;
+        d.set_item("coupling", meta.coupling)?;
+        d.set_item("probe_ratio", meta.probe_ratio)?;
+        Ok(Some(d))
     }
 
     #[pyo3(signature = (start=None, length=None))]

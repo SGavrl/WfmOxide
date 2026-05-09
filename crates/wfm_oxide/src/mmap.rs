@@ -4,6 +4,31 @@ use memmap2::Mmap;
 use binrw::{BinRead, Endian};
 use crate::dho::{self, DhoHeader};
 use crate::parser::Parser;
+
+/// Standard Rigol coupling code → text mapping.
+fn rigol_coupling(code: u8) -> Option<&'static str> {
+    match code {
+        0 => Some("DC"),
+        1 => Some("AC"),
+        2 => Some("GND"),
+        _ => None,
+    }
+}
+
+/// Decode the Rigol probe attenuation code into the real ratio. Returns None
+/// for codes outside the documented table; falls back to a passthrough integer
+/// so a future firmware that stores literal ratios is not silently dropped.
+fn rigol_probe_code(code: u8) -> Option<f32> {
+    const TABLE: &[(u8, f32)] = &[
+        (0, 0.01), (1, 0.02), (2, 0.05),
+        (3, 0.1),  (4, 0.2),  (5, 0.5),
+        (6, 1.0),  (7, 2.0),  (8, 5.0),
+        (9, 10.0), (10, 20.0), (11, 50.0),
+        (12, 100.0), (13, 200.0), (14, 500.0),
+        (15, 1000.0),
+    ];
+    TABLE.iter().find(|(c, _)| *c == code).map(|(_, v)| *v)
+}
 use crate::structs::{FileHeader, WfmHeader1000Z, WfmHeader1000E, WfmHeader2000, FileHeader2000, WfmHeader4000, TektronixStaticFileInfo, TektronixHeader, IsfHeader};
 
 /// Time-axis metadata for a captured waveform. All fields are in seconds.
@@ -13,6 +38,23 @@ pub struct TimeAxis {
     pub x_origin: f64,
     /// Seconds between consecutive samples.
     pub x_increment: f64,
+}
+
+/// Per-channel acquisition settings, derived from the file header without decoding.
+#[derive(Clone, Debug)]
+pub struct ChannelMeta {
+    /// 1-based channel number this metadata describes.
+    pub channel: usize,
+    /// Volts per vertical division as configured on the front panel.
+    pub vertical_scale: f32,
+    /// Vertical offset in volts.
+    pub vertical_offset: f32,
+    /// True when the channel was inverted on the scope. False if not stored.
+    pub inverted: bool,
+    /// Coupling mode ("DC" | "AC" | "GND") when the format records it.
+    pub coupling: Option<&'static str>,
+    /// Probe attenuation factor (1, 10, 100, ...) when stored as a real number.
+    pub probe_ratio: Option<f32>,
 }
 
 impl TimeAxis {
@@ -339,6 +381,101 @@ impl WfmFile {
                 Some(TimeAxis { x_increment: h.x_increment, x_origin: h.x_origin })
             }
             WfmHeader::Ds1000e(_) | WfmHeader::Tektronix(_) => None,
+        }
+    }
+
+    /// Per-channel acquisition settings, when available. Returns None for channels
+    /// that are not enabled or for formats whose header does not record them.
+    pub fn channel_metadata(&self, channel: usize) -> Option<ChannelMeta> {
+        if channel < 1 || channel > 4 {
+            return None;
+        }
+        let ch_idx = channel - 1;
+        match &self.wfm_header {
+            WfmHeader::Ds1000z(h) => {
+                if !h.is_ch_enabled(ch_idx) { return None; }
+                let c = &h.channels[ch_idx];
+                Some(ChannelMeta {
+                    channel,
+                    vertical_scale: c.scale,
+                    vertical_offset: c.shift,
+                    inverted: c.inverted_val != 0,
+                    coupling: rigol_coupling(c.coupling),
+                    probe_ratio: rigol_probe_code(c.probe_ratio),
+                })
+            }
+            WfmHeader::Ds1000e(h) => {
+                if ch_idx > 1 || h.channels[ch_idx].enabled_val == 0 { return None; }
+                let c = &h.channels[ch_idx];
+                let scale = (c.scale_measured as f32 / 1_000_000.0) * c.probe_value;
+                let offset = c.shift_measured as f32 * scale / 25.0;
+                Some(ChannelMeta {
+                    channel,
+                    vertical_scale: scale,
+                    vertical_offset: offset,
+                    inverted: c.inverted_m_val != 0,
+                    coupling: None,
+                    probe_ratio: Some(c.probe_value),
+                })
+            }
+            WfmHeader::Ds2000(h) => {
+                if !h.is_ch_enabled(ch_idx) { return None; }
+                let c = &h.channels[ch_idx];
+                Some(ChannelMeta {
+                    channel,
+                    vertical_scale: c.volt_per_division,
+                    vertical_offset: c.volt_offset,
+                    inverted: c.is_inverted(),
+                    coupling: rigol_coupling(c.coupling_raw),
+                    probe_ratio: rigol_probe_code(c.probe_ratio_raw),
+                })
+            }
+            WfmHeader::Ds4000(h) => {
+                if !h.is_ch_enabled(ch_idx) { return None; }
+                let c = &h.channels[ch_idx];
+                Some(ChannelMeta {
+                    channel,
+                    vertical_scale: c.volt_per_division,
+                    vertical_offset: c.volt_offset,
+                    inverted: c.inverted_val != 0,
+                    coupling: rigol_coupling(c.coupling),
+                    probe_ratio: rigol_probe_code(c.probe_ratio),
+                })
+            }
+            WfmHeader::Tektronix(h) => {
+                if ch_idx != 0 { return None; }
+                Some(ChannelMeta {
+                    channel: 1,
+                    vertical_scale: h.y_scale as f32,
+                    vertical_offset: h.y_offset as f32,
+                    inverted: false,
+                    coupling: None,
+                    probe_ratio: None,
+                })
+            }
+            WfmHeader::Isf(h) => {
+                if ch_idx != 0 { return None; }
+                Some(ChannelMeta {
+                    channel: 1,
+                    vertical_scale: h.ymult,
+                    vertical_offset: h.yzero,
+                    inverted: false,
+                    coupling: None,
+                    probe_ratio: None,
+                })
+            }
+            WfmHeader::Dho(h) => {
+                let cal = h.channel_cals[ch_idx]?;
+                // RigolWFM reports volt_per_div = |scale * 65536 / 8| for DHO.
+                Some(ChannelMeta {
+                    channel,
+                    vertical_scale: (cal.scale * 65536.0 / 8.0).abs(),
+                    vertical_offset: cal.offset,
+                    inverted: false,
+                    coupling: None,
+                    probe_ratio: None,
+                })
+            }
         }
     }
 

@@ -40,6 +40,14 @@ class WfmOxide:
         """Returns a NumPy float64 array of timestamps in seconds, or None if the format does not expose a time axis."""
         return self._inner.get_time_axis(start, length)
 
+    def channel_metadata(self, channel: int):
+        """Returns a dict of per-channel acquisition settings, or None if not available.
+
+        Keys: channel (1-based), vertical_scale (V/div), vertical_offset (V), inverted (bool),
+        coupling ('DC'|'AC'|'GND'|None), probe_ratio (float|None).
+        """
+        return self._inner.channel_metadata(channel)
+
     def get_channel_data(self, channel: int, start: int = None, length: int = None):
         """
         Returns the voltage data for the specified channel as a NumPy array.
