@@ -1,8 +1,10 @@
 use pyo3::prelude::*;
 use numpy::{IntoPyArray, PyArray1};
 
+mod dho;
 mod mmap;
 mod parser;
+mod sample;
 mod structs;
 
 use mmap::WfmFile;
@@ -52,6 +54,9 @@ impl WfmOxide {
             },
             mmap::WfmHeader::Tektronix(_) | mmap::WfmHeader::Isf(_) => {
                 enabled.push(1);
+            },
+            mmap::WfmHeader::Dho(header) => {
+                for i in 0..4 { if header.is_ch_enabled(i) { enabled.push(i + 1); } }
             }
         }
         enabled
@@ -59,8 +64,8 @@ impl WfmOxide {
 
     #[pyo3(signature = (channel, start=None, length=None))]
     fn get_channel_data<'py>(&self, py: Python<'py>, channel: usize, start: Option<usize>, length: Option<usize>) -> PyResult<Bound<'py, PyArray1<f32>>> {
-        if channel < 1 || channel > 4 {
-            return Err(pyo3::exceptions::PyValueError::new_err("Channel must be between 1 and 4"));
+        if channel < 1 {
+            return Err(pyo3::exceptions::PyValueError::new_err("Channel index must be >= 1"));
         }
 
         let result = py.allow_threads(|| {
@@ -82,6 +87,9 @@ impl WfmOxide {
                 },
                 mmap::WfmHeader::Isf(header) => {
                     Parser::get_channel_data_isf(&self.inner, header, channel - 1, start, length)
+                },
+                mmap::WfmHeader::Dho(header) => {
+                    Parser::get_channel_data_dho(&self.inner, header, channel - 1, start, length)
                 }
             }
         }).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;

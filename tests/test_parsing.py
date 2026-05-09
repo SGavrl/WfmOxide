@@ -11,7 +11,11 @@ from wfm_oxide import WfmOxide
     ("DS1000E-B.wfm", "E"),
     ("DS2000-A.wfm", "2000"),
     ("DS2072A-9.wfm", "2000"),
-    ("DS4024-B.wfm", "4000")
+    ("DS4024-B.wfm", "4000"),
+    ("DHO1074.wfm", "DHO1000"),
+    ("DHO824-ch1.wfm", "DHO800"),
+    ("DHO824-ch12.wfm", "DHO800"),
+    ("DHO824-ch1234.wfm", "DHO800"),
 ])
 def test_correctness(filename, model_id):
     path = os.path.join("test_data", filename)

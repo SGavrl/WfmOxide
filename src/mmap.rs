@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::{Cursor, Seek, SeekFrom};
 use memmap2::Mmap;
 use binrw::{BinRead, Endian};
+use crate::dho::{self, DhoHeader};
 use crate::structs::{FileHeader, WfmHeader1000Z, WfmHeader1000E, WfmHeader2000, FileHeader2000, WfmHeader4000, TektronixStaticFileInfo, TektronixHeader, IsfHeader};
 
 pub enum WfmHeader {
@@ -11,6 +12,7 @@ pub enum WfmHeader {
     Ds4000(WfmHeader4000),
     Tektronix(TektronixHeader),
     Isf(IsfHeader),
+    Dho(DhoHeader),
 }
 
 pub struct WfmFile {
@@ -100,6 +102,17 @@ impl WfmFile {
             });
         }
         
+        if dho::looks_like_dho_wfm(&mmap) {
+            let dho_header = dho::parse(&mmap)?;
+            let model = dho_header.model.clone();
+            return Ok(WfmFile {
+                mmap,
+                model_number: model,
+                firmware_version: "Unknown".to_string(),
+                wfm_header: WfmHeader::Dho(dho_header),
+            });
+        }
+
         // Peek at first 4 bytes for magic
         let magic = &mmap[0..4];
         
