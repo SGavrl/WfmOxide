@@ -8,9 +8,9 @@ pub struct FileHeader {
     pub magic: [u8; 4],
     pub magic2: u16,
     pub structure_size: u16,
-    #[br(map = |s: [u8; 20]| String::from_utf8_lossy(&s).trim_end_matches('\0').to_string())]
+    #[br(map = |s: [u8; 20]| String::from_utf8_lossy(&s).split('\0').next().unwrap_or("").to_string())]
     pub model_number: String,
-    #[br(map = |s: [u8; 20]| String::from_utf8_lossy(&s).trim_end_matches('\0').to_string())]
+    #[br(map = |s: [u8; 20]| String::from_utf8_lossy(&s).split('\0').next().unwrap_or("").to_string())]
     pub firmware_version: String,
     pub block: [u8; 2],
     pub file_version: u16,
@@ -127,9 +127,9 @@ pub struct ChannelHeader1000E {
 #[br(little)]
 pub struct FileHeader2000 {
     pub magic: [u8; 4],
-    #[br(map = |s: [u8; 20]| String::from_utf8_lossy(&s).trim_end_matches('\0').to_string())]
+    #[br(map = |s: [u8; 20]| String::from_utf8_lossy(&s).split('\0').next().unwrap_or("").to_string())]
     pub model_number: String,
-    #[br(map = |s: [u8; 20]| String::from_utf8_lossy(&s).trim_end_matches('\0').to_string())]
+    #[br(map = |s: [u8; 20]| String::from_utf8_lossy(&s).split('\0').next().unwrap_or("").to_string())]
     pub firmware_version: String,
 }
 
@@ -296,5 +296,7 @@ pub struct IsfHeader {
     pub ymult: f32,
     pub yoff: f32,
     pub yzero: f32,
+    pub xincr: f64,
+    pub xzero: f64,
     pub data_offset: usize,
 }

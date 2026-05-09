@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use wfm_oxide::WfmFile;
+use wfm_oxide::{TimeAxis, WfmFile};
 
 #[derive(Parser, Debug)]
 #[command(name = "wfm-oxide")]
@@ -41,6 +41,10 @@ enum Cmd {
         /// Override the output format. Defaults to the --output extension.
         #[arg(short, long)]
         format: Option<Format>,
+        /// Suppress the leading time column. Time is included by default when the
+        /// format exposes a time axis.
+        #[arg(long)]
+        no_time: bool,
     },
 }
 
@@ -54,12 +58,12 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Cmd::Info { path } => cmd_info(&path),
-        Cmd::Convert { path, output, channel, start, length, format } => {
+        Cmd::Convert { path, output, channel, start, length, format, no_time } => {
             let format = match format {
                 Some(f) => f,
                 None => infer_format(&output)?,
             };
-            cmd_convert(&path, &output, channel, start, length, format)
+            cmd_convert(&path, &output, channel, start, length, format, no_time)
         }
     }
 }
@@ -71,6 +75,22 @@ fn cmd_info(path: &Path) -> Result<()> {
     println!("Firmware: {}", wfm.firmware_version);
     let channels = wfm.enabled_channels();
     println!("Channels: {} enabled ({})", channels.len(), format_channel_list(&channels));
+
+    if let Some(t) = wfm.time_axis() {
+        let n_pts = channels
+            .first()
+            .and_then(|ch| wfm.channel_sample_count(*ch).ok())
+            .unwrap_or(0);
+        println!("Sample rate: {}", format_si(t.sample_rate(), "Sa/s"));
+        println!("Sample step: {}", format_si(t.x_increment, "s"));
+        if n_pts > 0 {
+            println!("Capture:     {} ({} samples)", format_si(n_pts as f64 * t.x_increment, "s"), n_pts);
+        }
+        println!("Time origin: {}", format_si(t.x_origin, "s"));
+    } else {
+        println!("Time axis:   <not available for this format>");
+    }
+
     for ch in &channels {
         match wfm.channel_sample_count(*ch) {
             Ok(n) => println!("  CH{}: {} samples", ch, n),
@@ -80,6 +100,22 @@ fn cmd_info(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn format_si(value: f64, unit: &str) -> String {
+    if value == 0.0 || !value.is_finite() {
+        return format!("{} {}", value, unit);
+    }
+    let abs = value.abs();
+    let (scale, prefix) = if abs >= 1e9       { (1e-9,  "G")
+                          } else if abs >= 1e6  { (1e-6,  "M")
+                          } else if abs >= 1e3  { (1e-3,  "k")
+                          } else if abs >= 1.0  { (1.0,   "")
+                          } else if abs >= 1e-3 { (1e3,   "m")
+                          } else if abs >= 1e-6 { (1e6,   "µ")
+                          } else if abs >= 1e-9 { (1e9,   "n")
+                          } else                { (1e12,  "p") };
+    format!("{:.4} {}{}", value * scale, prefix, unit)
+}
+
 fn cmd_convert(
     path: &Path,
     output: &Path,
@@ -87,6 +123,7 @@ fn cmd_convert(
     start: Option<usize>,
     length: Option<usize>,
     format: Format,
+    no_time: bool,
 ) -> Result<()> {
     let wfm = open_wfm(path)?;
     let enabled = wfm.enabled_channels();
@@ -116,14 +153,19 @@ fn cmd_convert(
         bail!("Channel sample counts differ; this format mixes channel lengths and is not yet supported by `convert`.");
     }
 
+    let time_axis = if no_time { None } else { wfm.time_axis() };
+    let start_pt = start.unwrap_or(0);
+
     match format {
-        Format::Csv => write_csv(output, &channels, &data, n_samples)?,
-        Format::Npy => write_npy(output, &channels, &data, n_samples)?,
+        Format::Csv => write_csv(output, &channels, &data, n_samples, time_axis, start_pt)?,
+        Format::Npy => write_npy(output, &channels, &data, n_samples, time_axis, start_pt)?,
     }
+    let time_note = if time_axis.is_some() { " + time" } else { "" };
     eprintln!(
-        "Wrote {} samples × {} channel(s) to {}",
+        "Wrote {} samples × {} channel(s){} to {}",
         n_samples,
         channels.len(),
+        time_note,
         output.display()
     );
     Ok(())
@@ -163,19 +205,36 @@ fn format_channel_list(channels: &[usize]) -> String {
         .join(", ")
 }
 
-fn write_csv(output: &Path, channels: &[usize], data: &[Vec<f32>], n_samples: usize) -> Result<()> {
+fn write_csv(
+    output: &Path,
+    channels: &[usize],
+    data: &[Vec<f32>],
+    n_samples: usize,
+    time_axis: Option<TimeAxis>,
+    start_pt: usize,
+) -> Result<()> {
     let file = File::create(output).with_context(|| format!("creating {}", output.display()))?;
     let mut w = BufWriter::new(file);
 
-    let header: Vec<String> = channels.iter().map(|c| format!("CH{}", c)).collect();
-    writeln!(w, "{}", header.join(","))?;
+    let mut header_cols: Vec<String> = Vec::with_capacity(channels.len() + 1);
+    if time_axis.is_some() {
+        header_cols.push("time".to_string());
+    }
+    header_cols.extend(channels.iter().map(|c| format!("CH{}", c)));
+    writeln!(w, "{}", header_cols.join(","))?;
 
     for i in 0..n_samples {
-        for (j, col) in data.iter().enumerate() {
-            if j > 0 {
+        let mut col_idx = 0;
+        if let Some(t) = time_axis {
+            write!(w, "{}", t.x_origin + (start_pt + i) as f64 * t.x_increment)?;
+            col_idx = 1;
+        }
+        for col in data.iter() {
+            if col_idx > 0 {
                 w.write_all(b",")?;
             }
             write!(w, "{}", col[i])?;
+            col_idx += 1;
         }
         w.write_all(b"\n")?;
     }
@@ -183,24 +242,39 @@ fn write_csv(output: &Path, channels: &[usize], data: &[Vec<f32>], n_samples: us
     Ok(())
 }
 
-fn write_npy(output: &Path, channels: &[usize], data: &[Vec<f32>], n_samples: usize) -> Result<()> {
+fn write_npy(
+    output: &Path,
+    channels: &[usize],
+    data: &[Vec<f32>],
+    n_samples: usize,
+    time_axis: Option<TimeAxis>,
+    start_pt: usize,
+) -> Result<()> {
     let file = File::create(output).with_context(|| format!("creating {}", output.display()))?;
     let mut w = BufWriter::new(file);
 
-    let shape = if channels.len() == 1 {
-        format!("({},)", n_samples)
-    } else {
-        // (n_samples, n_channels) — row-major, one sample per row, columns by channel.
-        format!("({}, {})", n_samples, channels.len())
+    // dtype + shape:
+    //   time on:   structured 1D record [('time','<f8'), ('CH1','<f4'), ...]
+    //   time off, 1 channel:    plain '<f4', shape (n,)
+    //   time off, k channels:   plain '<f4', shape (n, k)
+    let (descr, shape) = match (time_axis.is_some(), channels.len()) {
+        (true, _) => {
+            let mut fields = Vec::with_capacity(channels.len() + 1);
+            fields.push("('time', '<f8')".to_string());
+            for c in channels {
+                fields.push(format!("('CH{}', '<f4')", c));
+            }
+            (format!("[{}]", fields.join(", ")), format!("({},)", n_samples))
+        }
+        (false, 1) => ("'<f4'".to_string(), format!("({},)", n_samples)),
+        (false, k) => ("'<f4'".to_string(), format!("({}, {})", n_samples, k)),
     };
+
     let header_dict = format!(
-        "{{'descr': '<f4', 'fortran_order': False, 'shape': {}, }}",
-        shape
+        "{{'descr': {}, 'fortran_order': False, 'shape': {}, }}",
+        descr, shape
     );
 
-    // NPY 1.0: 6-byte magic + 2-byte version + 2-byte u16 header length + header text.
-    // Total preamble length (10 bytes + header_dict bytes + trailing newline) must be a
-    // multiple of 64; pad with spaces before the newline.
     let prefix_len = 10 + header_dict.len() + 1;
     let pad_len = (64 - (prefix_len % 64)) % 64;
     let header_padded = format!("{}{}\n", header_dict, " ".repeat(pad_len));
@@ -214,16 +288,29 @@ fn write_npy(output: &Path, channels: &[usize], data: &[Vec<f32>], n_samples: us
     w.write_all(&(header_bytes.len() as u16).to_le_bytes())?;
     w.write_all(header_bytes)?;
 
-    // Always emit little-endian to match the '<f4' dtype string regardless of host byte order.
-    if channels.len() == 1 {
-        for &v in &data[0] {
-            w.write_all(&v.to_le_bytes())?;
+    match (time_axis, channels.len()) {
+        // Structured: 8 bytes time + 4 bytes per channel, per record.
+        (Some(t), _) => {
+            for i in 0..n_samples {
+                let ts = t.x_origin + (start_pt + i) as f64 * t.x_increment;
+                w.write_all(&ts.to_le_bytes())?;
+                for col in data {
+                    w.write_all(&col[i].to_le_bytes())?;
+                }
+            }
         }
-    } else {
-        // Interleave row-major: row i is [ch0[i], ch1[i], ...].
-        for i in 0..n_samples {
-            for col in data {
-                w.write_all(&col[i].to_le_bytes())?;
+        // No time, single channel — 1D f32.
+        (None, 1) => {
+            for &v in &data[0] {
+                w.write_all(&v.to_le_bytes())?;
+            }
+        }
+        // No time, multi channel — 2D f32 (n_samples, n_channels).
+        (None, _) => {
+            for i in 0..n_samples {
+                for col in data {
+                    w.write_all(&col[i].to_le_bytes())?;
+                }
             }
         }
     }

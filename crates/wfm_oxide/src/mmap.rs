@@ -6,6 +6,22 @@ use crate::dho::{self, DhoHeader};
 use crate::parser::Parser;
 use crate::structs::{FileHeader, WfmHeader1000Z, WfmHeader1000E, WfmHeader2000, FileHeader2000, WfmHeader4000, TektronixStaticFileInfo, TektronixHeader, IsfHeader};
 
+/// Time-axis metadata for a captured waveform. All fields are in seconds.
+#[derive(Copy, Clone, Debug)]
+pub struct TimeAxis {
+    /// Time of sample 0, relative to the trigger.
+    pub x_origin: f64,
+    /// Seconds between consecutive samples.
+    pub x_increment: f64,
+}
+
+impl TimeAxis {
+    /// Sampling frequency in Hz.
+    pub fn sample_rate(&self) -> f64 {
+        if self.x_increment > 0.0 { 1.0 / self.x_increment } else { 0.0 }
+    }
+}
+
 pub enum WfmHeader {
     Ds1000z(WfmHeader1000Z),
     Ds1000e(WfmHeader1000E),
@@ -56,7 +72,9 @@ impl WfmFile {
             let mut ymult = 1.0;
             let mut yoff = 0.0;
             let mut yzero = 0.0;
-            
+            let mut xincr: f64 = 0.0;
+            let mut xzero: f64 = 0.0;
+
             let parts = header_text.split(';');
             for part in parts {
                 let part = part.trim();
@@ -64,7 +82,7 @@ impl WfmFile {
                 let part = part.strip_prefix(":CURVE:").unwrap_or(part);
                 let part = part.strip_prefix(":CURV:").unwrap_or(part);
                 let part = part.strip_prefix(":").unwrap_or(part);
-                
+
                 let mut kv = part.splitn(2, char::is_whitespace);
                 if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
                     let k = k.trim().to_uppercase();
@@ -76,6 +94,8 @@ impl WfmFile {
                         "YMULT" | "YMU" => ymult = v.parse().unwrap_or(1.0),
                         "YOFF" | "YOF" => yoff = v.parse().unwrap_or(0.0),
                         "YZERO" | "YZE" => yzero = v.parse().unwrap_or(0.0),
+                        "XINCR" | "XIN" => xincr = v.parse().unwrap_or(0.0),
+                        "XZERO" | "XZE" => xzero = v.parse().unwrap_or(0.0),
                         _ => {}
                     }
                 }
@@ -92,6 +112,8 @@ impl WfmFile {
                 ymult,
                 yoff,
                 yzero,
+                xincr,
+                xzero,
                 data_offset,
             };
             
@@ -272,6 +294,52 @@ impl WfmFile {
     /// channel i+1 is not enabled.
     pub fn extract_all_channels(&self, start: Option<usize>, length: Option<usize>) -> anyhow::Result<Vec<Option<Vec<f32>>>> {
         Parser::get_all_channels(self, start, length)
+    }
+
+    /// Time axis (x_origin, x_increment) when the format and parser support it.
+    /// Returns None for DS1000E and Tektronix WFM where the relevant header
+    /// fields are not yet parsed.
+    pub fn time_axis(&self) -> Option<TimeAxis> {
+        match &self.wfm_header {
+            WfmHeader::Ds1000z(h) => {
+                if h.sample_rate_ghz <= 0.0 { return None; }
+                let dt = 1.0 / (h.sample_rate_ghz as f64 * 1e9);
+                let trigger = h.picoseconds_offset as f64 * 1e-12;
+                let n = h.points() as f64;
+                Some(TimeAxis { x_increment: dt, x_origin: trigger - n * dt / 2.0 })
+            }
+            WfmHeader::Ds2000(h) => {
+                if h.sample_rate_hz <= 0.0 { return None; }
+                let dt = 1.0 / h.sample_rate_hz as f64;
+                // Older DS2A captures with firmware 00.03.00.01.03 store a non-zero
+                // time_offset even when the saved screenshot shows a centered trigger;
+                // RigolWFM treats that as a firmware quirk and zeroes the offset.
+                let trigger_ps = if self.model_number.starts_with("DS2A") && self.firmware_version == "00.03.00.01.03" {
+                    0.0
+                } else {
+                    h.time_offset_ps as f64 * 1e-12
+                };
+                let trigger = trigger_ps + h.z_pt_offset as f64 * dt;
+                let n = h.wfm_len as f64;
+                Some(TimeAxis { x_increment: dt, x_origin: trigger - n * dt / 2.0 })
+            }
+            WfmHeader::Ds4000(h) => {
+                if h.sample_rate_hz <= 0.0 { return None; }
+                let dt = 1.0 / h.sample_rate_hz as f64;
+                // No trigger-relative offset is parsed for DS4000; assume centered trigger.
+                let n = h.mem_depth as f64;
+                Some(TimeAxis { x_increment: dt, x_origin: -n * dt / 2.0 })
+            }
+            WfmHeader::Isf(h) => {
+                if h.xincr <= 0.0 { return None; }
+                Some(TimeAxis { x_increment: h.xincr, x_origin: h.xzero })
+            }
+            WfmHeader::Dho(h) => {
+                if h.x_increment <= 0.0 { return None; }
+                Some(TimeAxis { x_increment: h.x_increment, x_origin: h.x_origin })
+            }
+            WfmHeader::Ds1000e(_) | WfmHeader::Tektronix(_) => None,
+        }
     }
 
     /// Sample count for the given channel, derived from the header without decoding.

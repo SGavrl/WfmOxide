@@ -21,6 +21,25 @@ class WfmOxide:
         """Returns a list of integer channel numbers that were enabled during capture."""
         return self._inner.enabled_channels
 
+    @property
+    def x_origin(self):
+        """Time of sample 0 in seconds, relative to the trigger. None if the format does not expose it."""
+        return self._inner.x_origin
+
+    @property
+    def x_increment(self):
+        """Seconds between consecutive samples. None if the format does not expose it."""
+        return self._inner.x_increment
+
+    @property
+    def sample_rate(self):
+        """Sampling frequency in Hz. None if the format does not expose it."""
+        return self._inner.sample_rate
+
+    def get_time_axis(self, start: int = None, length: int = None):
+        """Returns a NumPy float64 array of timestamps in seconds, or None if the format does not expose a time axis."""
+        return self._inner.get_time_axis(start, length)
+
     def get_channel_data(self, channel: int, start: int = None, length: int = None):
         """
         Returns the voltage data for the specified channel as a NumPy array.

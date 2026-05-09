@@ -8,8 +8,8 @@ const FILE_HEADER_SIZE: usize = 24;
 const BLOCK_HEADER_SIZE: usize = 12;
 const ADC_MIDPOINT: f32 = 32768.0;
 
-const DHO1000_TICK_S: f32 = 1e-8;
-const DHO800_TICK_S: f32 = 8e-10;
+const DHO1000_TICK_S: f64 = 1e-8;
+const DHO800_TICK_S: f64 = 8e-10;
 
 const BLOCK_TYPE_DHO800_PARAMS: u16 = 5;
 const BLOCK_TYPE_SETTINGS: u16 = 6;
@@ -30,8 +30,8 @@ pub struct DhoHeader {
     pub n_pts_per_ch: usize,
     pub n_ch: usize,
     pub data_start: usize,
-    pub x_increment: f32,
-    pub x_origin: f32,
+    pub x_increment: f64,
+    pub x_origin: f64,
 }
 
 impl DhoHeader {
@@ -226,7 +226,7 @@ fn find_data_section(
     data: &[u8],
     blocks_end: usize,
     is_dho800: bool,
-) -> Result<(usize, usize, usize, f32, f32)> {
+) -> Result<(usize, usize, usize, f64, f64)> {
     let mut offset = blocks_end;
     while offset < data.len() && data[offset] == 0 {
         offset += 1;
@@ -257,8 +257,8 @@ fn find_data_section(
         x_increment_raw = 1;
     }
     let tick_s = if is_dho800 { DHO800_TICK_S } else { DHO1000_TICK_S };
-    let x_increment = (x_increment_raw as f64 * tick_s as f64) as f32;
-    let x_origin = -(n_pts_per_ch as f32 / 2.0) * x_increment;
+    let x_increment = x_increment_raw as f64 * tick_s;
+    let x_origin = -(n_pts_per_ch as f64 / 2.0) * x_increment;
 
     Ok((n_pts_per_ch, n_ch, offset + 40, x_increment, x_origin))
 }
