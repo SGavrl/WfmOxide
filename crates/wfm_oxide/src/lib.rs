@@ -6,6 +6,7 @@ pub mod keysight;
 pub mod lecroy;
 pub mod mmap;
 pub mod parser;
+pub mod rohde_schwarz;
 pub mod sample;
 pub mod siglent;
 pub mod structs;

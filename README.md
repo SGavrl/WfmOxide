@@ -45,6 +45,7 @@ Binary formats vary heavily by manufacturer and firmware version. Support is imp
 | **Keysight / Agilent** | InfiniiVision `.bin` (DSO-X, MSO-X) — normal float + u8 logic buffers | ✓ | ✓ | – (data is pre-scaled) |
 | **Siglent** | SDS1xx4X-E series `.bin` (heuristic detection — no magic bytes) | ✓ | ✓ | scale, offset |
 | **Teledyne LeCroy** | `.trc` WAVEDESC (LECROY_2_3 template — Wave*, HDO, DDA, LC) | ✓ | ✓ | scale, offset |
+| **Rohde & Schwarz** | RTP / RTO / RTE paired `.bin` + `.Wfm.bin` (i8, i16, f32, XYDOUBLEFLOAT) | ✓ | ✓ | scale, offset, position |
 
 ## Installation & Setup
 
@@ -180,7 +181,7 @@ The crate is organised as a Cargo workspace so the CLI's dependencies (clap, ser
 WfmOxide/
 ├── crates/
 │   ├── wfm_oxide/          # Rust library (cdylib + rlib); feeds the Python wheel via maturin
-│   │   └── src/            # mmap.rs, parser.rs, sample.rs, dho.rs, keysight.rs, lecroy.rs, siglent.rs, structs.rs, lib.rs
+│   │   └── src/            # mmap.rs, parser.rs, sample.rs, dho.rs, keysight.rs, lecroy.rs, rohde_schwarz.rs, siglent.rs, structs.rs, lib.rs
 │   └── wfm_oxide_cli/      # `wfm-oxide` binary, depends on wfm_oxide as a path dependency
 ├── python/wfm_oxide/       # Python wrapper around the compiled extension
 ├── tests/                  # pytest suite, validated against RigolWFM as the reference

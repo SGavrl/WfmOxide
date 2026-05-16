@@ -6,6 +6,7 @@ use crate::dho::{self, DhoHeader};
 use crate::keysight::{self, KeysightHeader};
 use crate::lecroy::{self, LecroyHeader};
 use crate::parser::Parser;
+use crate::rohde_schwarz::{self, RsHeader};
 use crate::siglent::{self, SiglentHeader};
 
 /// Standard Rigol coupling code → text mapping.
@@ -78,6 +79,7 @@ pub enum WfmHeader {
     Keysight(KeysightHeader),
     Siglent(SiglentHeader),
     Lecroy(LecroyHeader),
+    RohdeSchwarz(RsHeader),
 }
 
 pub struct WfmFile {
@@ -91,7 +93,23 @@ impl WfmFile {
     pub fn open(path: &str) -> anyhow::Result<Self> {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
-        
+
+        // R&S is a paired-file format: the user passes the XML `.bin`, and
+        // we have to open its `.Wfm.bin` sibling for the actual samples.
+        // Detection has to run before everything else because the
+        // user-facing file is XML and would otherwise be claimed by no
+        // other detector (and would error out).
+        if rohde_schwarz::looks_like_rs(&mmap) {
+            drop(mmap);
+            let (rs_header, payload_mmap) = rohde_schwarz::open(path)?;
+            return Ok(WfmFile {
+                mmap: payload_mmap,
+                model_number: "Rohde & Schwarz RTP/RTO/RTE".to_string(),
+                firmware_version: "Unknown".to_string(),
+                wfm_header: WfmHeader::RohdeSchwarz(rs_header),
+            });
+        }
+
         let mut is_isf = false;
         let limit = std::cmp::min(mmap.len(), 512);
         for i in 0..limit {
@@ -374,6 +392,9 @@ impl WfmFile {
             WfmHeader::Lecroy(h) => {
                 enabled.push(h.channel);
             }
+            WfmHeader::RohdeSchwarz(h) => {
+                for c in &h.channels { enabled.push(c.channel); }
+            }
         }
         enabled
     }
@@ -395,6 +416,7 @@ impl WfmFile {
             WfmHeader::Keysight(h)  => Parser::get_channel_data_keysight(self, h, ch_idx, start, length),
             WfmHeader::Siglent(h)   => Parser::get_channel_data_siglent(self, h, ch_idx, start, length),
             WfmHeader::Lecroy(h)    => Parser::get_channel_data_lecroy(self, h, ch_idx, start, length),
+            WfmHeader::RohdeSchwarz(h) => Parser::get_channel_data_rs(self, h, ch_idx, start, length),
         }
     }
 
@@ -458,6 +480,11 @@ impl WfmFile {
             WfmHeader::Lecroy(h) => {
                 if h.horiz_interval <= 0.0 { return None; }
                 Some(TimeAxis { x_increment: h.horiz_interval, x_origin: h.horiz_offset })
+            }
+            WfmHeader::RohdeSchwarz(h) => {
+                let dt = h.x_increment();
+                if dt <= 0.0 { return None; }
+                Some(TimeAxis { x_increment: dt, x_origin: h.x_origin() })
             }
             WfmHeader::Ds1000e(_) | WfmHeader::Tektronix(_) => None,
         }
@@ -582,6 +609,17 @@ impl WfmFile {
                     probe_ratio: None,
                 })
             }
+            WfmHeader::RohdeSchwarz(h) => {
+                let c = h.channels.iter().find(|c| c.channel == channel)?;
+                Some(ChannelMeta {
+                    channel,
+                    vertical_scale: c.vertical_scale,
+                    vertical_offset: c.vertical_offset,
+                    inverted: false,
+                    coupling: None,
+                    probe_ratio: None,
+                })
+            }
         }
     }
 
@@ -675,6 +713,12 @@ impl WfmFile {
                     return Err(anyhow::anyhow!("Channel {} is not enabled", channel));
                 }
                 h.n_points
+            }
+            WfmHeader::RohdeSchwarz(h) => {
+                let _ = h.channels.iter().find(|c| c.channel == channel).ok_or_else(|| {
+                    anyhow::anyhow!("Channel {} is not enabled", channel)
+                })?;
+                h.record_length
             }
         };
         Ok(count)

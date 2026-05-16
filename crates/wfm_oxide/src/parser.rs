@@ -2,6 +2,7 @@ use crate::dho::DhoHeader;
 use crate::keysight::{KeysightHeader, BUFFER_TYPE_FLOAT, BUFFER_TYPE_LOGIC};
 use crate::lecroy::{LecroyByteOrder, LecroyHeader, LecroySampleWidth};
 use crate::mmap::{WfmFile, WfmHeader};
+use crate::rohde_schwarz::{format_is_integer, RsHeader};
 use crate::sample::{decode_with, Affine, SampleType};
 use crate::siglent::{SiglentHeader, CODE_PER_DIV};
 use crate::structs::{IsfHeader, TektronixHeader, WfmHeader1000E, WfmHeader1000Z, WfmHeader2000, WfmHeader4000};
@@ -72,7 +73,106 @@ impl Parser {
             WfmHeader::Lecroy(header) => {
                 Ok(vec![Self::get_channel_data_lecroy(wfm, header, header.channel - 1, start_idx, length).ok()])
             }
+            WfmHeader::RohdeSchwarz(header) => {
+                let n = header.channels.len();
+                let results: Vec<_> = (0..n).into_par_iter().map(|i| {
+                    let ch_idx = header.channels[i].channel - 1;
+                    Self::get_channel_data_rs(wfm, header, ch_idx, start_idx, length).ok()
+                }).collect();
+                Ok(results)
+            }
         }
+    }
+
+    pub fn get_channel_data_rs(
+        wfm: &WfmFile,
+        header: &RsHeader,
+        channel_idx: usize,
+        start_idx: Option<usize>,
+        length: Option<usize>,
+    ) -> anyhow::Result<Vec<f32>> {
+        let channel = header
+            .channels
+            .iter()
+            .find(|c| c.channel == channel_idx + 1)
+            .ok_or_else(|| anyhow::anyhow!("Channel {} is not enabled", channel_idx + 1))?;
+
+        // Slice past the 8-byte payload header and the leading-settling
+        // rows that the scope wrote out but didn't include in the user
+        // record. After this `raw[0]` corresponds to record index 0.
+        let header_bytes = 8usize;
+        let leading_bytes = header
+            .leading_settling
+            .checked_mul(header.row_stride)
+            .ok_or_else(|| anyhow::anyhow!("R&S: leading-settling offset overflow"))?;
+        let data_start = header_bytes
+            .checked_add(leading_bytes)
+            .ok_or_else(|| anyhow::anyhow!("R&S: data_start overflow"))?;
+        let total_payload = header
+            .record_length
+            .checked_mul(header.row_stride)
+            .ok_or_else(|| anyhow::anyhow!("R&S: payload size overflow"))?;
+        let end = data_start
+            .checked_add(total_payload)
+            .ok_or_else(|| anyhow::anyhow!("R&S: data end overflow"))?;
+        if end > wfm.mmap.len() {
+            return Err(anyhow::anyhow!(
+                "R&S: payload window (offset {} + {} bytes) overruns mmap ({} bytes)",
+                data_start,
+                total_payload,
+                wfm.mmap.len()
+            ));
+        }
+        let raw = &wfm.mmap[data_start..end];
+
+        // Per-row byte offset of this channel's sample (skip the time
+        // prefix for XY records, then advance by the channel slot).
+        let chan_byte_offset = header.time_prefix_bytes + channel.slot * header.bytes_per_sample;
+        let row_stride = header.row_stride;
+        let bps = header.bytes_per_sample;
+
+        // Map sample index → raw "sample" index inside `raw`.
+        // The closure returns a sample index whose `× bps` yields a byte
+        // offset; we encode the row-stride + channel-slot arithmetic
+        // entirely in the index.
+        if bps == 0 {
+            return Err(anyhow::anyhow!("R&S: zero bytes_per_sample (format unsupported)"));
+        }
+        let raw_idx = move |i: usize| (i * row_stride + chan_byte_offset) / bps;
+
+        let sample_type = match header.format_code {
+            // INT8
+            0 => SampleType::I8,
+            // INT16 (LE — R&S has a documented firmware quirk where the
+            // ByteOrder tag is sometimes set to MSB but the payload is
+            // still little-endian, so we always read LE.)
+            1 => SampleType::I16Le,
+            // FLOAT32
+            4 => SampleType::F32Le,
+            // XYDOUBLEFLOAT — only the per-channel f32 voltage column is
+            // read here; the f64 time column is skipped by `chan_byte_offset`
+            // already adding the time-prefix bytes.
+            6 => SampleType::F32Le,
+            n => return Err(anyhow::anyhow!("R&S: unsupported format code {}", n)),
+        };
+
+        let transform = if format_is_integer(header.format_code) {
+            let conv = (channel.step_factor * channel.vertical_scale) / channel.quantisation_levels;
+            let position_volts = channel.vertical_position * channel.vertical_scale;
+            let offset = channel.vertical_offset - position_volts;
+            Affine { scale: conv, offset }
+        } else {
+            Affine { scale: 1.0, offset: 0.0 }
+        };
+
+        let (start_pt, slice_len) = Self::apply_slice(header.record_length, start_idx, length);
+        Ok(decode_with(
+            raw,
+            slice_len,
+            sample_type,
+            transform,
+            move |i| raw_idx(start_pt + i),
+        ))
     }
 
     pub fn get_channel_data_lecroy(

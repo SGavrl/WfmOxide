@@ -692,6 +692,88 @@ def test_lecroy_big_endian_synthetic(tmp_path):
     np.testing.assert_allclose(got, ref, rtol=0, atol=1e-7)
 
 
+# -------------------------------------------------------------------------
+# Rohde & Schwarz RTP / RTO / RTE (.bin + .Wfm.bin pair)
+# -------------------------------------------------------------------------
+
+# Spans the realistic R&S export matrix:
+#   01: float32, single channel
+#   02: float32, two channels (interleaved)
+#   03: int8, single channel
+#   04: XYDOUBLEFLOAT, single channel (f64 timestamp + f32 voltage rows)
+#   05: XYDOUBLEFLOAT, two channels (f64 timestamp + 2× f32 voltage rows)
+_RS_FIXTURES = [
+    ("test_data/rs/rs_rtp_01.bin", [1],    4000, 8.0e5,  -2.5e-3, 1.25e-6),
+    ("test_data/rs/rs_rtp_02.bin", [1, 2], 4000, 8.0e5,  -2.5e-3, 1.25e-6),
+    ("test_data/rs/rs_rtp_03.bin", [1],    4000, 8.0e5,  -2.5e-3, 1.25e-6),
+    ("test_data/rs/rs_rtp_04.bin", [1],    4000, 4.0e10, -5.24e-8, 2.5e-11),
+    ("test_data/rs/rs_rtp_05.bin", [1, 2], 4000, 4.0e10, -5.24e-8, 2.5e-11),
+]
+
+
+@pytest.mark.parametrize("path,channels,n_pts,sample_rate,x_origin,x_incr", _RS_FIXTURES)
+def test_rs_real_fixtures(path, channels, n_pts, sample_rate, x_origin, x_incr):
+    """All five real R&S RTP captures from scottprahl/RigolWFM, cross-validated
+    sample-for-sample against RigolWFM's own reference parser."""
+    rigol_wfm = pytest.importorskip("RigolWFM.wfm")
+    w = WfmOxide(path)
+    assert "Rohde & Schwarz" in w.model
+    assert w.enabled_channels == channels
+    assert abs(w.sample_rate - sample_rate) / sample_rate < 1e-3
+    assert abs(w.x_origin - x_origin) / abs(x_origin) < 1e-3
+    assert abs(w.x_increment - x_incr) / x_incr < 1e-3
+
+    ref = rigol_wfm.Wfm.from_file(path, "auto")
+    assert len(ref.channels) == len(channels)
+    for ch, ref_ch in zip(channels, ref.channels):
+        got = w.get_channel_data(ch)
+        assert got.shape == (n_pts,)
+        ref_v = np.asarray(ref_ch.volts, dtype=np.float32)
+        # All five fixtures use the same f32 arithmetic in both decoders,
+        # so the result must be bit-exact.
+        np.testing.assert_array_equal(got, ref_v)
+
+
+def test_rs_slicing_and_metadata():
+    """Slicing + metadata on the larger 2-channel XY fixture."""
+    path = "test_data/rs/rs_rtp_05.bin"
+    w = WfmOxide(path)
+    assert w.enabled_channels == [1, 2]
+    full = w.get_channel_data(2)
+    sub = w.get_channel_data(2, start=100, length=500)
+    np.testing.assert_array_equal(sub, full[100:600])
+
+    meta = w.channel_metadata(1)
+    assert meta is not None
+    # XYDOUBLEFLOAT records are already in volts — vertical_scale/offset are
+    # still surfaced from the XML metadata for documentation; just sanity-check.
+    assert meta["channel"] == 1
+    assert meta["coupling"] is None
+
+
+def test_rs_missing_payload(tmp_path):
+    """If the user passes the XML .bin but the sibling .Wfm.bin is missing,
+    fail with a clear error rather than silently treating the file as
+    something else."""
+    import shutil
+    src = "test_data/rs/rs_rtp_01.bin"
+    dst = tmp_path / "lonely.bin"
+    shutil.copy(src, dst)  # do NOT copy the Wfm.bin sibling
+    with pytest.raises(OSError):
+        WfmOxide(str(dst))
+
+
+def test_rs_get_all_channels():
+    """get_all_channels must return one entry per enabled channel."""
+    w = WfmOxide("test_data/rs/rs_rtp_02.bin")
+    all_c = w.get_all_channels()
+    assert len(all_c) == 2
+    assert all(c is not None for c in all_c)
+    # Order matches enabled_channels.
+    assert np.array_equal(all_c[0], w.get_channel_data(1))
+    assert np.array_equal(all_c[1], w.get_channel_data(2))
+
+
 def test_siglent_malformed_flag_falls_through(tmp_path):
     """A non-boolean ch_on value (e.g. 0xDEADBEEF) makes the heuristic reject
     the file, so unrelated binaries aren't misidentified as Siglent."""
