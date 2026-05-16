@@ -143,6 +143,9 @@ impl WfmFile {
                 }
             }
             
+            if header_end + 1 >= mmap.len() {
+                return Err(anyhow::anyhow!("ISF file truncated before digit-count byte"));
+            }
             let n_digits_char = mmap[header_end + 1];
             let n_digits = (n_digits_char - b'0') as usize;
             let data_offset = header_end + 2 + n_digits;
@@ -179,6 +182,9 @@ impl WfmFile {
         }
 
         // Peek at first 4 bytes for magic
+        if mmap.len() < 4 {
+            return Err(anyhow::anyhow!("File too small to contain a valid header ({} bytes)", mmap.len()));
+        }
         let magic = &mmap[0..4];
         
         // Tektronix byte order check (0x0F0F little endian, 0xF0F0 big endian)

@@ -140,3 +140,44 @@ def test_no_enabled_channels_does_not_panic():
     assert w.x_increment is None
     assert w.sample_rate is None
     assert w.get_time_axis() is None
+
+
+def test_empty_file_is_rejected_cleanly(tmp_path):
+    # Regression: an empty mmap previously panicked at &mmap[0..4].
+    p = tmp_path / "empty.wfm"
+    p.write_bytes(b"")
+    with pytest.raises(OSError):
+        WfmOxide(str(p))
+
+
+def test_short_file_is_rejected_cleanly(tmp_path):
+    # 3 bytes can't hold any known header.
+    p = tmp_path / "short.wfm"
+    p.write_bytes(b"\xde\xad\xbe")
+    with pytest.raises(OSError):
+        WfmOxide(str(p))
+
+
+def test_truncated_ds1000z_decode_errors_cleanly(tmp_path):
+    # Header parses but the sample payload claims more bytes than the file
+    # has. Previously panicked at &mmap[data_start..]; now must raise.
+    with open("test_data/DS1054Z-ch1SquareCH2Uart.wfm", "rb") as f:
+        header_only = f.read(1024)
+    p = tmp_path / "trunc.wfm"
+    p.write_bytes(header_only)
+
+    w = WfmOxide(str(p))
+    with pytest.raises(ValueError, match="overruns file"):
+        w.get_channel_data(1, length=5)
+
+
+def test_garbage_ds1000e_decode_errors_cleanly(tmp_path):
+    # Magic looks like DS1000E so header is parsed; channel scale/depth are
+    # garbage. Previously panicked when the decode slice ran past EOF.
+    body = b"\xa5\xa5\x00\x00" + bytes(range(256)) * 4
+    p = tmp_path / "fake.wfm"
+    p.write_bytes(body)
+
+    w = WfmOxide(str(p))
+    with pytest.raises(ValueError, match="overruns file"):
+        w.get_channel_data(1, length=5)

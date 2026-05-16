@@ -122,6 +122,9 @@ impl Parser {
             return Err(anyhow::anyhow!("ISF files typically contain only 1 channel"));
         }
 
+        if header.data_offset > wfm.mmap.len() {
+            return Err(anyhow::anyhow!("ISF data offset {} past end of file ({} bytes)", header.data_offset, wfm.mmap.len()));
+        }
         let raw_data = &wfm.mmap[header.data_offset..];
         let points = header.nr_pt as usize;
         let bpp = header.byt_nr as usize;
@@ -255,6 +258,13 @@ impl Parser {
         };
 
         let data_start = (header.horizontal_offset + header.horizontal_size) as usize;
+        let need = header.memory_depth as usize;
+        if data_start.checked_add(need).is_none_or(|end| end > wfm.mmap.len()) {
+            return Err(anyhow::anyhow!(
+                "DS1000Z sample payload (offset {} + {} bytes) overruns file ({} bytes)",
+                data_start, need, wfm.mmap.len(),
+            ));
+        }
         let raw_data = &wfm.mmap[data_start..];
 
         let volt_per_div = if channel.inverted_val != 0 { -channel.scale } else { channel.scale };
@@ -313,8 +323,15 @@ impl Parser {
         };
 
         let (start_pt, slice_len) = Self::apply_slice(points, start_idx, length);
+        let buf_start = data_start + chan_offset_bytes;
+        if buf_start.checked_add(points).is_none_or(|end| end > wfm.mmap.len()) {
+            return Err(anyhow::anyhow!(
+                "DS1000E sample payload (offset {} + {} bytes) overruns file ({} bytes)",
+                buf_start, points, wfm.mmap.len(),
+            ));
+        }
         Ok(decode_with(
-            &wfm.mmap[data_start + chan_offset_bytes..],
+            &wfm.mmap[buf_start..],
             slice_len,
             SampleType::U8,
             transform,
