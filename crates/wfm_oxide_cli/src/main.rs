@@ -215,24 +215,44 @@ fn cmd_convert(
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
 
+    let multi = paths.len() > 1;
+    let mut n_failed = 0usize;
     for path in &paths {
-        let resolved_format = match format {
-            Some(f) => f,
-            None => {
-                if let Some(o) = &output { infer_format(o)? }
-                else { bail!("--format is required when batch-converting without an inferable extension") }
+        let result = (|| -> Result<()> {
+            let resolved_format = match format {
+                Some(f) => f,
+                None => match &output {
+                    Some(o) => infer_format(o)?,
+                    None => bail!("--format is required when batch-converting without an inferable extension"),
+                },
+            };
+            let resolved_output = match (&output, &out_dir) {
+                (Some(o), _) => o.clone(),
+                (None, Some(dir)) => {
+                    let stem = path.file_stem()
+                        .ok_or_else(|| anyhow!("cannot derive stem from {}", path.display()))?;
+                    dir.join(stem).with_extension(format_extension(resolved_format))
+                }
+                (None, None) => unreachable!("validated above"),
+            };
+            if let Some(parent) = resolved_output.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("creating {}", parent.display()))?;
+                }
             }
-        };
-        let resolved_output = match (&output, &out_dir) {
-            (Some(o), _) => o.clone(),
-            (None, Some(dir)) => {
-                let stem = path.file_stem()
-                    .ok_or_else(|| anyhow!("cannot derive stem from {}", path.display()))?;
-                dir.join(stem).with_extension(format_extension(resolved_format))
+            convert_one(path, &resolved_output, channel, start, length, resolved_format, no_time)
+        })();
+        if let Err(e) = result {
+            if !multi {
+                return Err(e);
             }
-            (None, None) => unreachable!("validated above"),
-        };
-        convert_one(path, &resolved_output, channel, start, length, resolved_format, no_time)?;
+            eprintln!("Error: {}: {:#}", path.display(), e);
+            n_failed += 1;
+        }
+    }
+    if n_failed > 0 {
+        bail!("{} of {} file(s) failed", n_failed, paths.len());
     }
     Ok(())
 }
