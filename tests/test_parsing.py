@@ -181,3 +181,51 @@ def test_garbage_ds1000e_decode_errors_cleanly(tmp_path):
     w = WfmOxide(str(p))
     with pytest.raises(ValueError, match="overruns file"):
         w.get_channel_data(1, length=5)
+
+
+def test_ds1000e_with_roll_stop(tmp_path):
+    """Coverage: DS1000E with roll_stop > 0 (none of the committed fixtures
+    set it). Synthesize a file by patching the roll_stop field of a real
+    capture, then cross-check oxide vs RigolWFM."""
+    import struct
+    src = open("test_data/DS1000E-B.wfm", "rb").read()
+    data = bytearray(src)
+    data[20:24] = struct.pack("<I", 5)  # roll_stop offset is 20
+    p = tmp_path / "rolled.wfm"
+    p.write_bytes(bytes(data))
+
+    w = WfmOxide(str(p))
+    ref = rigol.Wfm.from_file(str(p), "E")
+    expected = 8192 - (5 + 2)  # ch?_points = ch1_memory_depth - (roll_stop + 2)
+
+    for ch in (1, 2):
+        ch_ref = next(c for c in ref.channels if c.channel_number == ch)
+        v = w.get_channel_data(ch)
+        assert len(v) == expected
+        assert len(ch_ref.volts) == expected
+        np.testing.assert_allclose(v, ch_ref.volts, rtol=1e-3, atol=1e-5)
+
+
+def test_isf_lsb_byte_order(tmp_path):
+    """Coverage: ISF LSB (little-endian) byte order. All committed ISF
+    fixtures are MSB. Synthesize a LSB variant of tek_synth.isf and confirm
+    it decodes to the same samples as the MSB original."""
+    import struct
+    src = open("test_data/tek_synth.isf", "rb").read()
+    curv = src.find(b":CURV")
+    hash_pos = src.find(b"#", curv)
+    n_digits = int(chr(src[hash_pos + 1]))
+    data_off = hash_pos + 2 + n_digits
+
+    header = src[:data_off].decode("latin-1").replace("BYT_O MSB", "BYT_O LSB")
+    data_be = src[data_off:]
+    n = len(data_be) // 2
+    samples = struct.unpack(">" + "h" * n, data_be[:n * 2])
+    data_le = struct.pack("<" + "h" * n, *samples)
+
+    p = tmp_path / "isf_lsb.isf"
+    p.write_bytes(header.encode("latin-1") + data_le)
+
+    ref = WfmOxide("test_data/tek_synth.isf").get_channel_data(1)
+    new = WfmOxide(str(p)).get_channel_data(1)
+    np.testing.assert_array_equal(new, ref)
