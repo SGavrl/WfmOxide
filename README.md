@@ -43,6 +43,7 @@ Binary formats vary heavily by manufacturer and firmware version. Support is imp
 | **Tektronix** | TDS/DPO/MSO (WFM#001-003) | ✓ | – | scale, offset |
 | **Tektronix** | TDS 210, TDS 1000, TPS 2024 (ISF) | ✓ | ✓ | scale, offset |
 | **Keysight / Agilent** | InfiniiVision `.bin` (DSO-X, MSO-X) — normal float + u8 logic buffers | ✓ | ✓ | – (data is pre-scaled) |
+| **Siglent** | SDS1xx4X-E series `.bin` (heuristic detection — no magic bytes) | ✓ | ✓ | scale, offset |
 
 ## Installation & Setup
 
@@ -178,7 +179,7 @@ The crate is organised as a Cargo workspace so the CLI's dependencies (clap, ser
 WfmOxide/
 ├── crates/
 │   ├── wfm_oxide/          # Rust library (cdylib + rlib); feeds the Python wheel via maturin
-│   │   └── src/            # mmap.rs, parser.rs, sample.rs, dho.rs, keysight.rs, structs.rs, lib.rs
+│   │   └── src/            # mmap.rs, parser.rs, sample.rs, dho.rs, keysight.rs, siglent.rs, structs.rs, lib.rs
 │   └── wfm_oxide_cli/      # `wfm-oxide` binary, depends on wfm_oxide as a path dependency
 ├── python/wfm_oxide/       # Python wrapper around the compiled extension
 ├── tests/                  # pytest suite, validated against RigolWFM as the reference

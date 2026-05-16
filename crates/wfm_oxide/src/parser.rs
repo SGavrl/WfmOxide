@@ -2,6 +2,7 @@ use crate::dho::DhoHeader;
 use crate::keysight::{KeysightHeader, BUFFER_TYPE_FLOAT, BUFFER_TYPE_LOGIC};
 use crate::mmap::{WfmFile, WfmHeader};
 use crate::sample::{decode_with, Affine, SampleType};
+use crate::siglent::{SiglentHeader, CODE_PER_DIV};
 use crate::structs::{IsfHeader, TektronixHeader, WfmHeader1000E, WfmHeader1000Z, WfmHeader2000, WfmHeader4000};
 use rayon::prelude::*;
 
@@ -61,7 +62,57 @@ impl Parser {
                 }).collect();
                 Ok(results)
             }
+            WfmHeader::Siglent(header) => {
+                let results: Vec<_> = (0..4).into_par_iter().map(|ch_idx| {
+                    Self::get_channel_data_siglent(wfm, header, ch_idx, start_idx, length).ok()
+                }).collect();
+                Ok(results)
+            }
         }
+    }
+
+    pub fn get_channel_data_siglent(
+        wfm: &WfmFile,
+        header: &SiglentHeader,
+        channel_idx: usize,
+        start_idx: Option<usize>,
+        length: Option<usize>,
+    ) -> anyhow::Result<Vec<f32>> {
+        if channel_idx > 3 {
+            return Err(anyhow::anyhow!("Channel must be between 1 and 4"));
+        }
+        let channel = header
+            .channels
+            .iter()
+            .find(|c| c.channel == channel_idx + 1)
+            .ok_or_else(|| anyhow::anyhow!("Channel {} is not enabled", channel_idx + 1))?;
+
+        let end = channel.data_offset.checked_add(header.wave_length);
+        if end.is_none_or(|e| e > wfm.mmap.len()) {
+            return Err(anyhow::anyhow!(
+                "Siglent: channel {} payload (offset {} + {} bytes) overruns file ({} bytes)",
+                channel_idx + 1,
+                channel.data_offset,
+                header.wave_length,
+                wfm.mmap.len(),
+            ));
+        }
+        let raw = &wfm.mmap[channel.data_offset..channel.data_offset + header.wave_length];
+
+        // V = (byte - 128) × vdiv / CODE_PER_DIV − v_offset
+        //   = byte × scale + (-128 × scale − v_offset)
+        let scale = (channel.volt_per_div / CODE_PER_DIV) as f32;
+        let offset = -128.0_f32 * scale - channel.volt_offset as f32;
+        let transform = Affine { scale, offset };
+
+        let (start_pt, slice_len) = Self::apply_slice(header.wave_length, start_idx, length);
+        Ok(decode_with(
+            raw,
+            slice_len,
+            SampleType::U8,
+            transform,
+            move |i| start_pt + i,
+        ))
     }
 
     pub fn get_channel_data_keysight(

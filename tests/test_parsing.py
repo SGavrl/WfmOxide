@@ -426,3 +426,164 @@ def test_isf_lsb_byte_order(tmp_path):
     ref = WfmOxide("test_data/tek_synth.isf").get_channel_data(1)
     new = WfmOxide(str(p)).get_channel_data(1)
     np.testing.assert_array_equal(new, ref)
+
+
+# -------------------------------------------------------------------------
+# Siglent SDS1xx4X-E (.bin)
+# -------------------------------------------------------------------------
+
+def _siglent_reference_decode(path):
+    """Pure-Python reference decoder, ported from
+    featherfeet/siglent2csv + danielpclin/siglent-sds1000x-e-binary-decode.
+    Used to byte-exact-validate the Rust parser on a real capture."""
+    import struct
+    with open(path, "rb") as f:
+        d = f.read()
+
+    def u32(o): return struct.unpack_from("<I", d, o)[0]
+    def f64(o): return struct.unpack_from("<d", d, o)[0]
+
+    ch_on = [u32(0x00 + 4 * i) for i in range(4)]
+    vdiv = [f64(0x10 + 16 * i) for i in range(4)]
+    vdiv_mag = [u32(0x18 + 16 * i) for i in range(4)]
+    voff = [f64(0x50 + 16 * i) for i in range(4)]
+    voff_mag = [u32(0x58 + 16 * i) for i in range(4)]
+    wave_len = u32(0xF4)
+    srate = f64(0xF8) * (10.0 ** ((u32(0x100) - 8) * 3))
+
+    def mag(v, m): return v * (10.0 ** ((m - 8) * 3))
+
+    cursor = 0x800
+    out = {}
+    for ch in range(4):
+        if ch_on[ch] != 1:
+            continue
+        raw = np.frombuffer(d, dtype=np.uint8, offset=cursor, count=wave_len)
+        v = (raw.astype(np.int16) - 128).astype(np.float32) \
+            * np.float32(mag(vdiv[ch], vdiv_mag[ch]) / 25.0) \
+            - np.float32(mag(voff[ch], voff_mag[ch]))
+        out[ch + 1] = v
+        cursor += wave_len
+    return wave_len, srate, out
+
+
+def test_siglent_real_sds1xx4x_e():
+    """Real capture from a Siglent SDS1xx4X-E (1 channel, 7 Msamples @ 1 GSa/s).
+    Source: github.com/geekman/siglent-bin2sr/sample-file.bin.
+    Byte-exact cross-validation against the documented decode formula."""
+    path = "test_data/Siglent-SDS1xx4X-E-sample.bin"
+    w = WfmOxide(path)
+    assert w.model == "Siglent SDS"
+    assert w.enabled_channels == [1]
+    assert abs(w.sample_rate - 1e9) < 1.0
+    # Trigger is positioned 7 divisions before the screen center; tdiv = 500 µs.
+    assert abs(w.x_origin - (-3.5e-3)) < 1e-9
+    assert abs(w.x_increment - 1e-9) < 1e-15
+
+    meta = w.channel_metadata(1)
+    assert abs(meta["vertical_scale"] - 0.374) < 1e-4
+    assert abs(meta["vertical_offset"] - (-1.5109599828720093)) < 1e-4
+    assert meta["coupling"] is None  # Siglent .bin does not store coupling
+
+    wave_len, srate, ref = _siglent_reference_decode(path)
+    assert wave_len == 7_000_000
+    assert abs(srate - 1e9) < 1.0
+
+    got = w.get_channel_data(1)
+    np.testing.assert_allclose(got, ref[1], rtol=0, atol=1e-6)
+
+    # Slicing.
+    sub = w.get_channel_data(1, start=12345, length=1024)
+    np.testing.assert_array_equal(sub, got[12345:12345 + 1024])
+
+    # Time axis spans the full capture.
+    t = w.get_time_axis()
+    assert t.shape == (7_000_000,)
+    assert abs(t[0] - w.x_origin) < 1e-15
+    assert abs(t[-1] - (w.x_origin + (7_000_000 - 1) * w.x_increment)) < 1e-9
+
+
+def _build_siglent_bin(ch_data, vdiv, voff, sample_rate=1e9, tdiv=1e-3, tdly=0.0):
+    """Build a minimal valid Siglent .bin payload. `ch_data` is a dict mapping
+    1-based channel number -> numpy uint8 array; only channels in the dict are
+    marked enabled. All magnitude indices are 8 (base SI unit)."""
+    import struct
+    header = bytearray(0x800)
+    for ch in range(4):
+        enabled = (ch + 1) in ch_data
+        struct.pack_into("<I", header, 0x00 + 4 * ch, 1 if enabled else 0)
+        struct.pack_into("<d", header, 0x10 + 16 * ch, vdiv.get(ch + 1, 1.0))
+        struct.pack_into("<I", header, 0x18 + 16 * ch, 8)   # magnitude = base unit
+        struct.pack_into("<I", header, 0x1C + 16 * ch, 0)   # units = V
+        struct.pack_into("<d", header, 0x50 + 16 * ch, voff.get(ch + 1, 0.0))
+        struct.pack_into("<I", header, 0x58 + 16 * ch, 8)
+        struct.pack_into("<I", header, 0x5C + 16 * ch, 0)
+    struct.pack_into("<d", header, 0xD4, tdiv)
+    struct.pack_into("<I", header, 0xDC, 8)
+    struct.pack_into("<I", header, 0xE0, 14)  # seconds
+    struct.pack_into("<d", header, 0xE4, tdly)
+    struct.pack_into("<I", header, 0xEC, 8)
+    struct.pack_into("<I", header, 0xF0, 14)
+    # All enabled channels must share the same wave_length.
+    wave_lens = {len(v) for v in ch_data.values()}
+    assert len(wave_lens) == 1
+    struct.pack_into("<I", header, 0xF4, wave_lens.pop())
+    struct.pack_into("<d", header, 0xF8, sample_rate)
+    struct.pack_into("<I", header, 0x100, 8)
+    struct.pack_into("<I", header, 0x104, 12)  # Hz
+
+    body = b"".join(ch_data[c].tobytes() for c in sorted(ch_data))
+    return bytes(header) + body
+
+
+def test_siglent_multichannel_roundtrip(tmp_path):
+    """Synthesize a 2-channel Siglent capture and confirm both channels
+    round-trip through the decoder with the (raw-128)*vdiv/25 - voff formula."""
+    rng = np.random.default_rng(0xDEADBEEF)
+    n = 4096
+    ch1 = rng.integers(0, 256, n, dtype=np.uint8)
+    ch3 = rng.integers(0, 256, n, dtype=np.uint8)
+    p = tmp_path / "synth.bin"
+    p.write_bytes(_build_siglent_bin(
+        ch_data={1: ch1, 3: ch3},
+        vdiv={1: 0.5, 3: 0.1},
+        voff={1: -0.25, 3: 0.0},
+        sample_rate=2.5e9,
+        tdiv=200e-9,
+    ))
+    w = WfmOxide(str(p))
+    assert w.enabled_channels == [1, 3]
+    assert abs(w.sample_rate - 2.5e9) < 1.0
+    # Trigger at division 7: x_origin = 0 − 200ns × 7 = -1.4 µs
+    assert abs(w.x_origin - (-1.4e-6)) < 1e-12
+
+    g1 = w.get_channel_data(1)
+    g3 = w.get_channel_data(3)
+    ref1 = (ch1.astype(np.int16) - 128).astype(np.float32) * np.float32(0.5 / 25.0) - np.float32(-0.25)
+    ref3 = (ch3.astype(np.int16) - 128).astype(np.float32) * np.float32(0.1 / 25.0) - np.float32(0.0)
+    np.testing.assert_allclose(g1, ref1, rtol=0, atol=1e-6)
+    np.testing.assert_allclose(g3, ref3, rtol=0, atol=1e-6)
+
+    allc = w.get_all_channels()
+    assert allc[0] is not None and allc[1] is None and allc[2] is not None and allc[3] is None
+
+
+def test_siglent_no_channels_enabled_falls_through(tmp_path):
+    """Heuristic guard: a 0x800-aligned file with all ch_on flags zero must
+    NOT be detected as Siglent."""
+    p = tmp_path / "all_off.bin"
+    p.write_bytes(b"\x00" * 0x1000)
+    with pytest.raises(OSError):
+        WfmOxide(str(p))
+
+
+def test_siglent_malformed_flag_falls_through(tmp_path):
+    """A non-boolean ch_on value (e.g. 0xDEADBEEF) makes the heuristic reject
+    the file, so unrelated binaries aren't misidentified as Siglent."""
+    import struct
+    buf = bytearray(0x1000)
+    struct.pack_into("<I", buf, 0x00, 0xDEADBEEF)
+    p = tmp_path / "bogus.bin"
+    p.write_bytes(bytes(buf))
+    with pytest.raises(OSError):
+        WfmOxide(str(p))

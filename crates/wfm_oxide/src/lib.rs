@@ -6,6 +6,7 @@ pub mod keysight;
 pub mod mmap;
 pub mod parser;
 pub mod sample;
+pub mod siglent;
 pub mod structs;
 
 pub use mmap::{ChannelMeta, TimeAxis, WfmFile, WfmHeader};
