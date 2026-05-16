@@ -577,6 +577,121 @@ def test_siglent_no_channels_enabled_falls_through(tmp_path):
         WfmOxide(str(p))
 
 
+# -------------------------------------------------------------------------
+# LeCroy / Teledyne LeCroy .trc (WAVEDESC)
+# -------------------------------------------------------------------------
+
+_LECROY_FIXTURES = [
+    ("test_data/LeCroy-pulse.trc",          502,    1_000_000_000.0,    1e-9),
+    ("test_data/LeCroy-pulse-sequence.trc", 10_040, 1_000_000_000.0,    1e-9),
+    ("test_data/LeCroy-issue1.trc",         100_002, 10_000_000.0,      1e-7),
+]
+
+
+@pytest.mark.parametrize("path,n_points,sample_rate,x_increment", _LECROY_FIXTURES)
+def test_lecroy_real_fixtures(path, n_points, sample_rate, x_increment):
+    """All three fixtures were captured on different LeCroy scopes and span
+    the realistic spectrum (small single-shot, segmented sequence, deep-memory
+    14-bit). Cross-validate sample-for-sample against lecroyparser (a
+    well-known third-party Python decoder)."""
+    lecroyparser = pytest.importorskip("lecroyparser")
+    w = WfmOxide(path)
+    assert "LeCroy" in w.model
+    assert len(w.enabled_channels) == 1
+    ch = w.enabled_channels[0]
+    assert abs(w.sample_rate - sample_rate) / sample_rate < 1e-6
+    assert abs(w.x_increment - x_increment) / x_increment < 1e-6
+
+    got = w.get_channel_data(ch)
+    assert got.shape == (n_points,)
+    ref = lecroyparser.ScopeData(path).y.astype(np.float32)
+    # LeCroy .trc applies vgain×raw - voff in f32 just like Tektronix; bit-exact match.
+    np.testing.assert_array_equal(got, ref)
+
+    # Time axis covers full record.
+    t = w.get_time_axis()
+    assert t.shape == (n_points,)
+    assert abs(t[0] - w.x_origin) < 1e-15
+    assert abs(t[-1] - (w.x_origin + (n_points - 1) * w.x_increment)) < 1e-9
+
+
+def test_lecroy_slicing_and_metadata():
+    """Spot-check slicing + channel_metadata on the largest real fixture."""
+    path = "test_data/LeCroy-issue1.trc"
+    w = WfmOxide(path)
+    ch = w.enabled_channels[0]
+
+    full = w.get_channel_data(ch)
+    sub = w.get_channel_data(ch, start=1000, length=512)
+    np.testing.assert_array_equal(sub, full[1000:1512])
+
+    meta = w.channel_metadata(ch)
+    # vgain/voff from the real header (verified independently above).
+    assert abs(meta["vertical_scale"] - 8.719309789739782e-07) < 1e-15
+    assert abs(meta["vertical_offset"] - (-0.33000001311302185)) < 1e-7
+    assert meta["coupling"] is None  # not surfaced for LeCroy yet
+
+
+def test_lecroy_wrong_channel_rejected():
+    """get_channel_data must reject channels not present in this file."""
+    w = WfmOxide("test_data/LeCroy-pulse.trc")
+    ch = w.enabled_channels[0]
+    other = 1 if ch != 1 else 2
+    with pytest.raises(ValueError):
+        w.get_channel_data(other)
+
+
+def test_lecroy_no_magic_falls_through(tmp_path):
+    """A short binary that doesn't contain WAVEDESC must not be claimed."""
+    p = tmp_path / "no.trc"
+    p.write_bytes(b"NOT_A_LECROY_FILE" + b"\x00" * 400)
+    with pytest.raises(OSError):
+        WfmOxide(str(p))
+
+
+def test_lecroy_big_endian_synthetic(tmp_path):
+    """Synthesize a tiny WAVEDESC capture with COMM_ORDER=0 (big-endian) and
+    confirm we read it back correctly. Real BE LeCroy captures are exotic
+    (mid-90s LC series, modern firmwares emit LE) but the format permits
+    them, so the decoder must handle the byte-order swap."""
+    import struct
+    n = 32
+    desc = bytearray(346)
+    desc[0:8] = b"WAVEDESC"
+    desc[16:26] = b"LECROY_2_3"
+    # COMM_TYPE=1 (word), COMM_ORDER=0 (big-endian)
+    struct.pack_into(">h", desc, 32, 1)
+    struct.pack_into(">h", desc, 34, 0)
+    struct.pack_into(">i", desc, 36, 346)  # WAVE_DESCRIPTOR
+    struct.pack_into(">i", desc, 40, 0)    # USER_TEXT
+    struct.pack_into(">i", desc, 48, 0)    # TRIGTIME_ARRAY
+    struct.pack_into(">i", desc, 60, n * 2)  # WAVE_ARRAY_1 bytes
+    struct.pack_into(">i", desc, 116, n)    # WAVE_ARRAY_COUNT
+    struct.pack_into(">f", desc, 156, 0.001)  # VGAIN
+    struct.pack_into(">f", desc, 160, -0.5)   # VOFF
+    struct.pack_into(">h", desc, 172, 16)     # NOMINAL_BITS
+    struct.pack_into(">f", desc, 176, 1e-9)   # HORIZ_INTERVAL
+    struct.pack_into(">d", desc, 180, -1e-8)  # HORIZ_OFFSET
+    struct.pack_into(">h", desc, 344, 2)      # WAVE_SOURCE → CH3
+
+    samples = np.arange(-n // 2, n // 2, dtype=np.int16)
+    payload = samples.astype(">i2").tobytes()
+
+    p = tmp_path / "be.trc"
+    p.write_bytes(bytes(desc) + payload)
+
+    w = WfmOxide(str(p))
+    assert "LeCroy" in w.model
+    assert w.enabled_channels == [3]   # WAVE_SOURCE=2 → CH3
+    # HORIZ_INTERVAL is stored as f32, so 1e-9 ≈ 1.0e-9 ± 30 (relative ~3e-8).
+    assert abs(w.sample_rate - 1e9) / 1e9 < 1e-6
+    assert abs(w.x_origin - (-1e-8)) < 1e-15
+
+    got = w.get_channel_data(3)
+    ref = samples.astype(np.float32) * np.float32(0.001) - np.float32(-0.5)
+    np.testing.assert_allclose(got, ref, rtol=0, atol=1e-7)
+
+
 def test_siglent_malformed_flag_falls_through(tmp_path):
     """A non-boolean ch_on value (e.g. 0xDEADBEEF) makes the heuristic reject
     the file, so unrelated binaries aren't misidentified as Siglent."""

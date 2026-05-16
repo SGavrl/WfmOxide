@@ -58,6 +58,93 @@ fn read_sample(buf: &[u8], byte_off: usize, ty: SampleType) -> f32 {
     }
 }
 
+/// Below this sample count, dispatching to rayon costs more than the
+/// per-element work saved — measured on a 100 k-sample LeCroy capture
+/// where the serial path beat `lecroyparser`'s vectorised numpy multiply.
+const SERIAL_THRESHOLD: usize = 256_000;
+
+#[inline(always)]
+fn decode_serial_typed<F>(
+    buf: &[u8],
+    n: usize,
+    ty: SampleType,
+    bpp: usize,
+    transform: Affine,
+    raw_idx: F,
+) -> Vec<f32>
+where
+    F: Fn(usize) -> usize,
+{
+    // Fast path: when the raw index is the identity (deinterleaved data
+    // common to LeCroy/Tek/ISF/Keysight), use chunks_exact so LLVM can
+    // autovectorise the i16→f32 conversion.
+    if raw_idx(0) == 0 && raw_idx(1) == 1 {
+        let need = n.checked_mul(bpp);
+        if let Some(end) = need {
+            if end <= buf.len() {
+                let slice = &buf[..end];
+                let mut out = Vec::with_capacity(n);
+                match ty {
+                    SampleType::U8 => {
+                        for &b in slice.iter().take(n) {
+                            out.push(transform.apply(b as f32));
+                        }
+                    }
+                    SampleType::I8 => {
+                        for &b in slice.iter().take(n) {
+                            out.push(transform.apply(b as i8 as f32));
+                        }
+                    }
+                    SampleType::I16Le => {
+                        for c in slice.chunks_exact(2).take(n) {
+                            let s = i16::from_le_bytes([c[0], c[1]]);
+                            out.push(transform.apply(s as f32));
+                        }
+                    }
+                    SampleType::I16Be => {
+                        for c in slice.chunks_exact(2).take(n) {
+                            let s = i16::from_be_bytes([c[0], c[1]]);
+                            out.push(transform.apply(s as f32));
+                        }
+                    }
+                    SampleType::U16Le => {
+                        for c in slice.chunks_exact(2).take(n) {
+                            let s = u16::from_le_bytes([c[0], c[1]]);
+                            out.push(transform.apply(s as f32));
+                        }
+                    }
+                    SampleType::U16Be => {
+                        for c in slice.chunks_exact(2).take(n) {
+                            let s = u16::from_be_bytes([c[0], c[1]]);
+                            out.push(transform.apply(s as f32));
+                        }
+                    }
+                    SampleType::F32Le => {
+                        for c in slice.chunks_exact(4).take(n) {
+                            let s = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+                            out.push(transform.apply(s));
+                        }
+                    }
+                    SampleType::I32Le | SampleType::I32Be => {
+                        // Fall through to generic path below.
+                        let mut v = Vec::with_capacity(n);
+                        for i in 0..n {
+                            v.push(transform.apply(read_sample(buf, raw_idx(i) * bpp, ty)));
+                        }
+                        return v;
+                    }
+                }
+                return out;
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        out.push(transform.apply(read_sample(buf, raw_idx(i) * bpp, ty)));
+    }
+    out
+}
+
 pub fn decode_with<F>(
     buf: &[u8],
     n: usize,
@@ -69,6 +156,9 @@ where
     F: Fn(usize) -> usize + Sync,
 {
     let bpp = ty.bytes_per_sample();
+    if n < SERIAL_THRESHOLD {
+        return decode_serial_typed(buf, n, ty, bpp, transform, raw_idx);
+    }
     match ty {
         SampleType::U8 => (0..n)
             .into_par_iter()

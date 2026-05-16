@@ -1,5 +1,6 @@
 use crate::dho::DhoHeader;
 use crate::keysight::{KeysightHeader, BUFFER_TYPE_FLOAT, BUFFER_TYPE_LOGIC};
+use crate::lecroy::{LecroyByteOrder, LecroyHeader, LecroySampleWidth};
 use crate::mmap::{WfmFile, WfmHeader};
 use crate::sample::{decode_with, Affine, SampleType};
 use crate::siglent::{SiglentHeader, CODE_PER_DIV};
@@ -68,7 +69,62 @@ impl Parser {
                 }).collect();
                 Ok(results)
             }
+            WfmHeader::Lecroy(header) => {
+                Ok(vec![Self::get_channel_data_lecroy(wfm, header, header.channel - 1, start_idx, length).ok()])
+            }
         }
+    }
+
+    pub fn get_channel_data_lecroy(
+        wfm: &WfmFile,
+        header: &LecroyHeader,
+        channel_idx: usize,
+        start_idx: Option<usize>,
+        length: Option<usize>,
+    ) -> anyhow::Result<Vec<f32>> {
+        // LeCroy .trc carries one channel per file; surface it under whatever
+        // channel index the WAVE_SOURCE field declared.
+        if channel_idx + 1 != header.channel {
+            return Err(anyhow::anyhow!(
+                "Channel {} is not present (this file holds CH{})",
+                channel_idx + 1,
+                header.channel
+            ));
+        }
+        let end = header
+            .data_offset
+            .checked_add(header.data_len)
+            .ok_or_else(|| anyhow::anyhow!("LeCroy: data offset overflow"))?;
+        if end > wfm.mmap.len() {
+            return Err(anyhow::anyhow!(
+                "LeCroy: sample payload (offset {} + {} bytes) overruns file ({} bytes)",
+                header.data_offset,
+                header.data_len,
+                wfm.mmap.len()
+            ));
+        }
+        let raw = &wfm.mmap[header.data_offset..end];
+
+        let sample_type = match (header.sample_width, header.byte_order) {
+            (LecroySampleWidth::Byte, _) => SampleType::I8,
+            (LecroySampleWidth::Word, LecroyByteOrder::Le) => SampleType::I16Le,
+            (LecroySampleWidth::Word, LecroyByteOrder::Be) => SampleType::I16Be,
+        };
+
+        // V = vgain × raw − voff
+        let transform = Affine {
+            scale: header.vertical_gain,
+            offset: -header.vertical_offset,
+        };
+
+        let (start_pt, slice_len) = Self::apply_slice(header.n_points, start_idx, length);
+        Ok(decode_with(
+            raw,
+            slice_len,
+            sample_type,
+            transform,
+            move |i| start_pt + i,
+        ))
     }
 
     pub fn get_channel_data_siglent(

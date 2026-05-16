@@ -4,6 +4,7 @@ use memmap2::Mmap;
 use binrw::{BinRead, Endian};
 use crate::dho::{self, DhoHeader};
 use crate::keysight::{self, KeysightHeader};
+use crate::lecroy::{self, LecroyHeader};
 use crate::parser::Parser;
 use crate::siglent::{self, SiglentHeader};
 
@@ -76,6 +77,7 @@ pub enum WfmHeader {
     Dho(DhoHeader),
     Keysight(KeysightHeader),
     Siglent(SiglentHeader),
+    Lecroy(LecroyHeader),
 }
 
 pub struct WfmFile {
@@ -182,6 +184,21 @@ impl WfmFile {
                 model_number: model,
                 firmware_version: "Unknown".to_string(),
                 wfm_header: WfmHeader::Dho(dho_header),
+            });
+        }
+
+        if lecroy::looks_like_lecroy(&mmap) {
+            let lc_header = lecroy::parse(&mmap)?;
+            let model = if lc_header.template_name.is_empty() {
+                "LeCroy".to_string()
+            } else {
+                format!("LeCroy ({})", lc_header.template_name)
+            };
+            return Ok(WfmFile {
+                mmap,
+                model_number: model,
+                firmware_version: "Unknown".to_string(),
+                wfm_header: WfmHeader::Lecroy(lc_header),
             });
         }
 
@@ -354,6 +371,9 @@ impl WfmFile {
             WfmHeader::Siglent(h) => {
                 for c in &h.channels { enabled.push(c.channel); }
             }
+            WfmHeader::Lecroy(h) => {
+                enabled.push(h.channel);
+            }
         }
         enabled
     }
@@ -374,6 +394,7 @@ impl WfmFile {
             WfmHeader::Dho(h)       => Parser::get_channel_data_dho(self, h, ch_idx, start, length),
             WfmHeader::Keysight(h)  => Parser::get_channel_data_keysight(self, h, ch_idx, start, length),
             WfmHeader::Siglent(h)   => Parser::get_channel_data_siglent(self, h, ch_idx, start, length),
+            WfmHeader::Lecroy(h)    => Parser::get_channel_data_lecroy(self, h, ch_idx, start, length),
         }
     }
 
@@ -433,6 +454,10 @@ impl WfmFile {
             WfmHeader::Siglent(h) => {
                 if h.sample_rate_hz <= 0.0 { return None; }
                 Some(TimeAxis { x_increment: h.x_increment(), x_origin: h.x_origin() })
+            }
+            WfmHeader::Lecroy(h) => {
+                if h.horiz_interval <= 0.0 { return None; }
+                Some(TimeAxis { x_increment: h.horiz_interval, x_origin: h.horiz_offset })
             }
             WfmHeader::Ds1000e(_) | WfmHeader::Tektronix(_) => None,
         }
@@ -546,6 +571,17 @@ impl WfmFile {
                     probe_ratio: None,
                 })
             }
+            WfmHeader::Lecroy(h) => {
+                if h.channel != channel { return None; }
+                Some(ChannelMeta {
+                    channel,
+                    vertical_scale: h.vertical_gain,
+                    vertical_offset: h.vertical_offset,
+                    inverted: false,
+                    coupling: None,
+                    probe_ratio: None,
+                })
+            }
         }
     }
 
@@ -633,6 +669,12 @@ impl WfmFile {
                     anyhow::anyhow!("Channel {} is not enabled", channel)
                 })?;
                 h.wave_length
+            }
+            WfmHeader::Lecroy(h) => {
+                if h.channel != channel {
+                    return Err(anyhow::anyhow!("Channel {} is not enabled", channel));
+                }
+                h.n_points
             }
         };
         Ok(count)

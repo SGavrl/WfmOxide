@@ -3,6 +3,7 @@ use numpy::{IntoPyArray, PyArray1};
 
 pub mod dho;
 pub mod keysight;
+pub mod lecroy;
 pub mod mmap;
 pub mod parser;
 pub mod sample;
