@@ -42,7 +42,7 @@ Binary formats vary heavily by manufacturer and firmware version. Support is imp
 | **Rigol** | DHO800 / DHO1000 (12-bit, ZLib metadata) | ✓ | ✓ | scale, offset |
 | **Tektronix** | TDS/DPO/MSO (WFM#001-003) | ✓ | – | scale, offset |
 | **Tektronix** | TDS 210, TDS 1000, TPS 2024 (ISF) | ✓ | ✓ | scale, offset |
-| **Keysight / Agilent** | InfiniiVision `.bin` (DSO-X, MSO-X) — normal float buffers | ✓ | ✓ | – (data is pre-scaled) |
+| **Keysight / Agilent** | InfiniiVision `.bin` (DSO-X, MSO-X) — normal float + u8 logic buffers | ✓ | ✓ | – (data is pre-scaled) |
 
 ## Installation & Setup
 

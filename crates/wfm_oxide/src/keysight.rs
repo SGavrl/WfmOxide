@@ -50,7 +50,7 @@
 //! We surface every waveform record as a 1-based channel and decode the
 //! first `buffer_type == 1` block (already in volts, IEEE 754 f32 LE).
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
 pub const COOKIE_AG: [u8; 2] = *b"AG";
@@ -58,6 +58,14 @@ pub const COOKIE_RG: [u8; 2] = *b"RG";
 const VERSION: [u8; 2] = *b"10";
 
 pub const BUFFER_TYPE_FLOAT: i16 = 1;
+pub const BUFFER_TYPE_LOGIC: i16 = 6;
+
+fn is_supported_buffer(buffer_type: i16, bytes_per_point: usize) -> bool {
+    matches!(
+        (buffer_type, bytes_per_point),
+        (1, 4) | (6, 1)
+    )
+}
 
 #[derive(Clone, Debug)]
 pub struct KeysightWaveform {
@@ -200,7 +208,11 @@ pub fn parse(data: &[u8]) -> Result<KeysightHeader> {
             );
         }
 
-        let mut chosen: Option<(usize, usize, usize, i16)> = None; // (offset, len, bpp, type)
+        // Prefer the first supported buffer (float voltage, then u8 logic).
+        // If a waveform has only unsupported buffers (peak detect, time series,
+        // averaging counters), we silently drop it from the channel list rather
+        // than rejecting the whole file — common for mixed-mode captures.
+        let mut chosen: Option<(usize, usize, usize, i16)> = None;
         for buf_idx in 0..n_buffers {
             let bh_start = c.position();
             let bh_size = read_i32(&mut c)?;
@@ -230,31 +242,22 @@ pub fn parse(data: &[u8]) -> Result<KeysightHeader> {
                     data.len(),
                 );
             }
-            // Keep the first float buffer; if none exists, fall back to the
-            // first buffer of any kind so we can at least record presence.
-            if chosen.is_none() || (chosen.as_ref().unwrap().3 != BUFFER_TYPE_FLOAT
-                && buffer_type == BUFFER_TYPE_FLOAT)
-            {
-                chosen = Some((data_start, buffer_size, bytes_per_point, buffer_type));
+            if is_supported_buffer(buffer_type, bytes_per_point) {
+                // Float beats logic when both are present in one waveform.
+                let upgrade = match chosen {
+                    None => true,
+                    Some((_, _, _, t)) => t != BUFFER_TYPE_FLOAT && buffer_type == BUFFER_TYPE_FLOAT,
+                };
+                if upgrade {
+                    chosen = Some((data_start, buffer_size, bytes_per_point, buffer_type));
+                }
             }
             c.seek(SeekFrom::Current(buffer_size as i64))?;
         }
-        let (data_offset, data_len, bpp, btype) = chosen
-            .ok_or_else(|| anyhow!("Keysight: waveform {} has no buffers", wf_idx))?;
-        if btype != BUFFER_TYPE_FLOAT {
-            bail!(
-                "Keysight: waveform {} buffer_type {} not yet supported (only normal float)",
-                wf_idx,
-                btype
-            );
-        }
-        if bpp != 4 {
-            bail!(
-                "Keysight: waveform {} bytes_per_point {} not yet supported (float buffers are 4)",
-                wf_idx,
-                bpp
-            );
-        }
+        let Some((data_offset, data_len, bpp, btype)) = chosen else {
+            // No supported buffer — skip this waveform entirely.
+            continue;
+        };
         waveforms.push(KeysightWaveform {
             channel_name,
             n_points: n_points as usize,

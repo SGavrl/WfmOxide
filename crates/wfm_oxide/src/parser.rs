@@ -1,5 +1,5 @@
 use crate::dho::DhoHeader;
-use crate::keysight::KeysightHeader;
+use crate::keysight::{KeysightHeader, BUFFER_TYPE_FLOAT, BUFFER_TYPE_LOGIC};
 use crate::mmap::{WfmFile, WfmHeader};
 use crate::sample::{decode_with, Affine, SampleType};
 use crate::structs::{IsfHeader, TektronixHeader, WfmHeader1000E, WfmHeader1000Z, WfmHeader2000, WfmHeader4000};
@@ -75,12 +75,7 @@ impl Parser {
             .waveforms
             .get(channel_idx)
             .ok_or_else(|| anyhow::anyhow!("Keysight: only {} waveform(s) in file", header.waveforms.len()))?;
-        if wf.bytes_per_point != 4 {
-            return Err(anyhow::anyhow!(
-                "Keysight: bytes_per_point={} not supported (only IEEE 754 f32)",
-                wf.bytes_per_point
-            ));
-        }
+
         // Header parsing already bounds-checked wf.data_offset + wf.data_len
         // against the mmap, but re-verify cheaply.
         let end = wf.data_offset.saturating_add(wf.data_len);
@@ -92,14 +87,29 @@ impl Parser {
             ));
         }
         let raw = &wfm.mmap[wf.data_offset..end];
-        let total = wf.n_points.min(wf.data_len / 4);
+
+        // Float voltage and u8 logic both use an identity transform — the
+        // float buffer is already in volts, and the logic buffer is a raw
+        // byte per sample (each bit = one digital line on an MSO pod).
+        let (sample_type, bpp) = match (wf.buffer_type, wf.bytes_per_point) {
+            (BUFFER_TYPE_FLOAT, 4) => (SampleType::F32Le, 4),
+            (BUFFER_TYPE_LOGIC, 1) => (SampleType::U8, 1),
+            (t, b) => {
+                return Err(anyhow::anyhow!(
+                    "Keysight: buffer_type={} bytes_per_point={} not supported",
+                    t,
+                    b
+                ));
+            }
+        };
+
+        let total = wf.n_points.min(wf.data_len / bpp);
         let (start_pt, slice_len) = Self::apply_slice(total, start_idx, length);
-        // Data is already in volts — identity transform.
         let transform = Affine { scale: 1.0, offset: 0.0 };
         Ok(decode_with(
             raw,
             slice_len,
-            SampleType::F32Le,
+            sample_type,
             transform,
             move |i| start_pt + i,
         ))

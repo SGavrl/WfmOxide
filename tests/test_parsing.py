@@ -262,6 +262,73 @@ def _build_keysight_bin(channels, x_increment, x_origin, model="DSO-X 2024A", co
     return file_hdr + wf_blocks
 
 
+def test_keysight_real_dso81204b():
+    """Real capture from a Keysight DSO81204B (40 GSa/s, 10 points).
+    Source: github.com/yodalee/keysightBin/testcase/points10.bin. Sample
+    values were cross-validated against that repository's reference Python
+    parser before being committed; the first/last triples below are the
+    exact bytes-cast-to-f32 from the file."""
+    w = WfmOxide("test_data/Keysight-DSO81204B-points10.bin")
+    assert "DSO81204B" in w.model
+    assert "Agilent/Keysight" in w.firmware
+    assert w.enabled_channels == [1]
+    assert abs(w.sample_rate - 4e10) < 1.0  # 40 GSa/s
+    assert abs(w.x_increment - 2.5e-11) < 1e-20
+    v = w.get_channel_data(1)
+    assert len(v) == 10
+    np.testing.assert_allclose(v[:3],  [-0.05251792, -0.05113737, -0.04898487], rtol=1e-6)
+    np.testing.assert_allclose(v[-3:], [ 0.03741286,  0.03802673,  0.03681479], rtol=1e-6)
+
+
+def test_keysight_real_dsox1102g():
+    """Real capture from a Keysight DSO-X 1102G (2 MSa/s, 2000 points).
+    Source: github.com/sam210723/wavebin/samples/DSOX1102G/data.bin. The
+    accompanying data.txt confirms 1.0V/div, AC coupling, 100 µs/div."""
+    w = WfmOxide("test_data/Keysight-DSOX1102G.bin")
+    assert "DSO-X 1102G" in w.model
+    assert "Agilent/Keysight" in w.firmware
+    assert w.enabled_channels == [1]
+    assert abs(w.sample_rate - 2e6) < 1.0
+    assert w.channel_metadata(1) is None  # Keysight .bin doesn't store V/div
+    v = w.get_channel_data(1)
+    assert len(v) == 2000
+    # First / last value triples taken from yodalee/keysightBin reference.
+    np.testing.assert_allclose(v[:3],  [1.84924626, 1.88944721, 1.84924626], rtol=1e-6)
+    np.testing.assert_allclose(v[-3:], [1.84924626, 1.84924626, 1.80904520], rtol=1e-6)
+
+    # Slice + length
+    v_slice = w.get_channel_data(1, start=100, length=50)
+    assert len(v_slice) == 50
+    np.testing.assert_array_equal(v_slice, v[100:150])
+
+    # Time axis is well-formed
+    t = w.get_time_axis()
+    assert len(t) == 2000
+    assert abs(t[1] - t[0] - w.x_increment) < 1e-15
+
+
+def test_keysight_real_mixed_mso():
+    """Real DSO-X 1102G MSO capture with one analog (CH1, float voltages)
+    and one digital (EXT, u8 logic) waveform. Exercises the buffer_type=6
+    path and confirms mixed-mode files no longer reject due to the digital
+    waveform.
+
+    Source: github.com/sam210723/wavebin/samples/DSOX1102G/digital.bin.
+    Cross-validated against yodalee/keysightBin before committing."""
+    w = WfmOxide("test_data/Keysight-DSOX1102G-mixed.bin")
+    assert w.enabled_channels == [1, 2]
+    assert abs(w.sample_rate - 1e9) < 1.0
+    v_analog = w.get_channel_data(1)
+    v_logic = w.get_channel_data(2)
+    assert len(v_analog) == 20000
+    assert len(v_logic) == 20000
+    # Logic channel: u8 per sample, each bit is a digital line. For EXT
+    # the values are 0/1 only.
+    assert set(np.unique(v_logic).tolist()).issubset({0.0, 1.0})
+    # Analog channel: a real captured waveform with meaningful variance.
+    assert v_analog.std() > 0.1
+
+
 def test_keysight_bin_roundtrip(tmp_path):
     """Keysight format round-trip: build a synthetic .bin with known float32
     voltages, decode through oxide, and assert exact equality."""
