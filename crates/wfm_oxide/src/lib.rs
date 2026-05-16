@@ -2,6 +2,7 @@ use pyo3::prelude::*;
 use numpy::{IntoPyArray, PyArray1};
 
 pub mod dho;
+pub mod keysight;
 pub mod mmap;
 pub mod parser;
 pub mod sample;

@@ -11,6 +11,7 @@ pub enum SampleType {
     I16Be,
     I32Le,
     I32Be,
+    F32Le,
 }
 
 impl SampleType {
@@ -18,7 +19,7 @@ impl SampleType {
         match self {
             SampleType::U8 | SampleType::I8 => 1,
             SampleType::U16Le | SampleType::U16Be | SampleType::I16Le | SampleType::I16Be => 2,
-            SampleType::I32Le | SampleType::I32Be => 4,
+            SampleType::I32Le | SampleType::I32Be | SampleType::F32Le => 4,
         }
     }
 }
@@ -51,6 +52,9 @@ fn read_sample(buf: &[u8], byte_off: usize, ty: SampleType) -> f32 {
         SampleType::I32Be => i32::from_be_bytes([
             buf[byte_off], buf[byte_off + 1], buf[byte_off + 2], buf[byte_off + 3],
         ]) as f32,
+        SampleType::F32Le => f32::from_le_bytes([
+            buf[byte_off], buf[byte_off + 1], buf[byte_off + 2], buf[byte_off + 3],
+        ]),
     }
 }
 
@@ -97,6 +101,10 @@ where
         SampleType::I32Be => (0..n)
             .into_par_iter()
             .map(|i| transform.apply(read_sample(buf, raw_idx(i) * bpp, SampleType::I32Be)))
+            .collect(),
+        SampleType::F32Le => (0..n)
+            .into_par_iter()
+            .map(|i| transform.apply(read_sample(buf, raw_idx(i) * bpp, SampleType::F32Le)))
             .collect(),
     }
 }

@@ -206,6 +206,136 @@ def test_ds1000e_with_roll_stop(tmp_path):
         np.testing.assert_allclose(v, ch_ref.volts, rtol=1e-3, atol=1e-5)
 
 
+def _build_keysight_bin(channels, x_increment, x_origin, model="DSO-X 2024A", cookie=b"AG"):
+    """Build a valid Keysight/Agilent InfiniiVision .bin in memory.
+
+    Each entry in ``channels`` is a (name, numpy float32 array) tuple. Returns
+    raw bytes ready to write to disk. Layout follows the public Keysight
+    DSOX programmer's guide.
+    """
+    import struct
+    import numpy as np
+
+    parts = []
+
+    # Waveform records first, into a buffer
+    wf_blocks = b""
+    for name, samples in channels:
+        samples = np.asarray(samples, dtype=np.float32)
+        n_points = len(samples)
+
+        # Canonical 140-byte waveform header. Layout follows the public
+        # Agilent/Keysight ".bin" file Programmer's Reference. Fields the
+        # parser doesn't care about can be zero, but the *length* must match
+        # the hdr_size field we declare.
+        wf_hdr = struct.pack(
+            "<i i i i i f d d d i i 16s 16s 24s 16s B B H I I",
+            140,                         # hdr_size
+            1,                           # wf_type = normal
+            1,                           # n_buffers
+            n_points,                    # n_points
+            0,                           # count
+            float(x_increment * n_points),  # x_disp_range
+            float(x_origin),             # x_disp_origin
+            float(x_increment),          # x_increment
+            float(x_origin),             # x_origin
+            2,                           # x_units = seconds
+            1,                           # y_units = volts
+            b"2026-05-16",               # date
+            b"12:00:00",                 # time
+            model.encode("ascii"),       # frame_model
+            name.encode("ascii"),        # channel_name
+            0,                           # acq_mode
+            100,                         # completion %
+            0,                           # x_units_subtype
+            0,                           # segment_index
+            0,                           # segment_count
+        )
+        assert len(wf_hdr) == 140, len(wf_hdr)
+        # 12-byte data header + payload
+        payload = samples.tobytes()
+        data_hdr = struct.pack("<i h h i", 12, 1, 4, len(payload))
+        wf_blocks += wf_hdr + data_hdr + payload
+
+    file_size = 12 + len(wf_blocks)
+    file_hdr = cookie + b"10" + struct.pack("<I i", file_size, len(channels))
+    return file_hdr + wf_blocks
+
+
+def test_keysight_bin_roundtrip(tmp_path):
+    """Keysight format round-trip: build a synthetic .bin with known float32
+    voltages, decode through oxide, and assert exact equality."""
+    import numpy as np
+
+    ch1 = np.linspace(-1.5, 1.5, 100, dtype=np.float32)
+    ch2 = np.sin(np.linspace(0, 4 * np.pi, 100)).astype(np.float32)
+
+    p = tmp_path / "synth.bin"
+    p.write_bytes(_build_keysight_bin(
+        channels=[("1", ch1), ("2", ch2)],
+        x_increment=2e-9,
+        x_origin=-1e-7,
+        model="DSOX-3024A",
+    ))
+
+    w = WfmOxide(str(p))
+    assert w.model == "DSOX-3024A"
+    assert "Agilent/Keysight" in w.firmware
+    assert w.enabled_channels == [1, 2]
+    assert abs(w.sample_rate - 0.5e9) < 1.0
+    assert abs(w.x_origin - (-1e-7)) < 1e-15
+    assert abs(w.x_increment - 2e-9) < 1e-15
+
+    v1 = w.get_channel_data(1)
+    v2 = w.get_channel_data(2)
+    np.testing.assert_array_equal(v1, ch1)
+    np.testing.assert_array_equal(v2, ch2)
+
+    # Slice + length
+    v1_slice = w.get_channel_data(1, start=10, length=5)
+    np.testing.assert_array_equal(v1_slice, ch1[10:15])
+
+    # Time axis math
+    t = w.get_time_axis()
+    assert len(t) == 100
+    assert abs(t[0] - (-1e-7)) < 1e-15
+    assert abs(t[-1] - (-1e-7 + 99 * 2e-9)) < 1e-15
+
+    # All channels
+    all_ch = w.get_all_channels()
+    assert all_ch[0] is not None and all_ch[1] is not None
+    np.testing.assert_array_equal(all_ch[0], ch1)
+    np.testing.assert_array_equal(all_ch[1], ch2)
+
+    # No vertical scale/offset/coupling in this format
+    assert w.channel_metadata(1) is None
+
+
+def test_keysight_rg_cookie(tmp_path):
+    """The 'RG' cookie variant (used by some Rigol exports) is also accepted."""
+    import numpy as np
+    ch = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+    p = tmp_path / "rg.bin"
+    p.write_bytes(_build_keysight_bin(
+        channels=[("1", ch)],
+        x_increment=1e-6,
+        x_origin=0.0,
+        cookie=b"RG",
+    ))
+    w = WfmOxide(str(p))
+    assert "Rigol" in w.firmware
+    np.testing.assert_array_equal(w.get_channel_data(1), ch)
+
+
+def test_keysight_invalid_cookie_falls_through(tmp_path):
+    """A file starting with random bytes is not detected as Keysight; the
+    fallthrough Rigol-magic check then rejects it cleanly."""
+    p = tmp_path / "no.bin"
+    p.write_bytes(b"XY10" + b"\x00" * 100)
+    with pytest.raises(OSError):
+        WfmOxide(str(p))
+
+
 def test_isf_lsb_byte_order(tmp_path):
     """Coverage: ISF LSB (little-endian) byte order. All committed ISF
     fixtures are MSB. Synthesize a LSB variant of tek_synth.isf and confirm

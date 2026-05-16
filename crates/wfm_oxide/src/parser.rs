@@ -1,4 +1,5 @@
 use crate::dho::DhoHeader;
+use crate::keysight::KeysightHeader;
 use crate::mmap::{WfmFile, WfmHeader};
 use crate::sample::{decode_with, Affine, SampleType};
 use crate::structs::{IsfHeader, TektronixHeader, WfmHeader1000E, WfmHeader1000Z, WfmHeader2000, WfmHeader4000};
@@ -53,7 +54,55 @@ impl Parser {
                 }).collect();
                 Ok(results)
             }
+            WfmHeader::Keysight(header) => {
+                let n = header.waveforms.len();
+                let results: Vec<_> = (0..n).into_par_iter().map(|ch_idx| {
+                    Self::get_channel_data_keysight(wfm, header, ch_idx, start_idx, length).ok()
+                }).collect();
+                Ok(results)
+            }
         }
+    }
+
+    pub fn get_channel_data_keysight(
+        wfm: &WfmFile,
+        header: &KeysightHeader,
+        channel_idx: usize,
+        start_idx: Option<usize>,
+        length: Option<usize>,
+    ) -> anyhow::Result<Vec<f32>> {
+        let wf = header
+            .waveforms
+            .get(channel_idx)
+            .ok_or_else(|| anyhow::anyhow!("Keysight: only {} waveform(s) in file", header.waveforms.len()))?;
+        if wf.bytes_per_point != 4 {
+            return Err(anyhow::anyhow!(
+                "Keysight: bytes_per_point={} not supported (only IEEE 754 f32)",
+                wf.bytes_per_point
+            ));
+        }
+        // Header parsing already bounds-checked wf.data_offset + wf.data_len
+        // against the mmap, but re-verify cheaply.
+        let end = wf.data_offset.saturating_add(wf.data_len);
+        if end > wfm.mmap.len() {
+            return Err(anyhow::anyhow!(
+                "Keysight: waveform payload overruns file ({} > {})",
+                end,
+                wfm.mmap.len()
+            ));
+        }
+        let raw = &wfm.mmap[wf.data_offset..end];
+        let total = wf.n_points.min(wf.data_len / 4);
+        let (start_pt, slice_len) = Self::apply_slice(total, start_idx, length);
+        // Data is already in volts — identity transform.
+        let transform = Affine { scale: 1.0, offset: 0.0 };
+        Ok(decode_with(
+            raw,
+            slice_len,
+            SampleType::F32Le,
+            transform,
+            move |i| start_pt + i,
+        ))
     }
 
     pub fn get_channel_data_dho(wfm: &WfmFile, header: &DhoHeader, channel_idx: usize, start_idx: Option<usize>, length: Option<usize>) -> anyhow::Result<Vec<f32>> {

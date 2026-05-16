@@ -3,6 +3,7 @@ use std::io::{Cursor, Seek, SeekFrom};
 use memmap2::Mmap;
 use binrw::{BinRead, Endian};
 use crate::dho::{self, DhoHeader};
+use crate::keysight::{self, KeysightHeader};
 use crate::parser::Parser;
 
 /// Standard Rigol coupling code → text mapping.
@@ -72,6 +73,7 @@ pub enum WfmHeader {
     Tektronix(TektronixHeader),
     Isf(IsfHeader),
     Dho(DhoHeader),
+    Keysight(KeysightHeader),
 }
 
 pub struct WfmFile {
@@ -178,6 +180,21 @@ impl WfmFile {
                 model_number: model,
                 firmware_version: "Unknown".to_string(),
                 wfm_header: WfmHeader::Dho(dho_header),
+            });
+        }
+
+        if keysight::looks_like_keysight(&mmap) {
+            let ks_header = keysight::parse(&mmap)?;
+            let model = if ks_header.model.is_empty() {
+                ks_header.vendor.clone()
+            } else {
+                ks_header.model.clone()
+            };
+            return Ok(WfmFile {
+                mmap,
+                model_number: model,
+                firmware_version: ks_header.vendor.clone(),
+                wfm_header: WfmHeader::Keysight(ks_header),
             });
         }
 
@@ -317,6 +334,9 @@ impl WfmFile {
             WfmHeader::Dho(header) => {
                 for i in 0..4 { if header.is_ch_enabled(i) { enabled.push(i + 1); } }
             }
+            WfmHeader::Keysight(h) => {
+                for i in 0..h.waveforms.len() { enabled.push(i + 1); }
+            }
         }
         enabled
     }
@@ -335,6 +355,7 @@ impl WfmFile {
             WfmHeader::Tektronix(h) => Parser::get_channel_data_tektronix(self, h, ch_idx, start, length),
             WfmHeader::Isf(h)       => Parser::get_channel_data_isf(self, h, ch_idx, start, length),
             WfmHeader::Dho(h)       => Parser::get_channel_data_dho(self, h, ch_idx, start, length),
+            WfmHeader::Keysight(h)  => Parser::get_channel_data_keysight(self, h, ch_idx, start, length),
         }
     }
 
@@ -385,6 +406,11 @@ impl WfmFile {
             WfmHeader::Dho(h) => {
                 if h.x_increment <= 0.0 { return None; }
                 Some(TimeAxis { x_increment: h.x_increment, x_origin: h.x_origin })
+            }
+            WfmHeader::Keysight(h) => {
+                let wf = h.waveforms.first()?;
+                if wf.x_increment <= 0.0 { return None; }
+                Some(TimeAxis { x_increment: wf.x_increment, x_origin: wf.x_origin })
             }
             WfmHeader::Ds1000e(_) | WfmHeader::Tektronix(_) => None,
         }
@@ -482,6 +508,11 @@ impl WfmFile {
                     probe_ratio: None,
                 })
             }
+            WfmHeader::Keysight(_) => {
+                // Keysight stores already-scaled f32 voltages; vertical
+                // scale/offset/coupling/probe are not preserved in .bin.
+                None
+            }
         }
     }
 
@@ -554,6 +585,15 @@ impl WfmFile {
                     return Err(anyhow::anyhow!("Channel {} is not enabled", channel));
                 }
                 h.n_pts_per_ch
+            }
+            WfmHeader::Keysight(h) => {
+                if ch_idx >= h.waveforms.len() {
+                    return Err(anyhow::anyhow!(
+                        "Keysight: only {} waveform(s) in file",
+                        h.waveforms.len()
+                    ));
+                }
+                h.waveforms[ch_idx].n_points
             }
         };
         Ok(count)
