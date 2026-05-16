@@ -4,16 +4,63 @@ build-backend = "maturin"
 
 [project]
 name = "wfm_oxide"
-version = "0.4.0"
+version = "0.4.1"
+description = "Fast zero-copy parser for oscilloscope waveform files (Rigol, Tektronix, Keysight, Siglent, LeCroy, Rohde & Schwarz)"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "SGavrl", email = "277843151+SGavrl@users.noreply.github.com" },
+]
 requires-python = ">=3.8, <3.15"
+keywords = [
+    "oscilloscope", "waveform", "parser", "rust", "pyo3", "numpy",
+    "Rigol", "Tektronix", "Keysight", "Agilent", "Siglent",
+    "LeCroy", "Rohde-Schwarz",
+    "wfm", "trc", "isf", "bin",
+    "DS1000Z", "DS1054Z", "DS1074Z", "DS1104Z", "MSO1074Z", "MSO1104Z",
+    "DS1000E", "DS1052E", "DS1102E", "DS1000D",
+    "DS2000", "DS2072A", "DS2102A", "DS2202A", "DS2302A",
+    "DS4000", "DS4014", "DS4024", "DS4054",
+    "DHO800", "DHO814", "DHO824", "DHO1000", "DHO1074", "DHO1104",
+    "TDS210", "TDS1000", "TPS2024", "DPO", "MSO",
+    "InfiniiVision", "DSO-X", "MSO-X",
+    "SDS1xx4X-E", "SDS1104X-E", "SDS1204X-E",
+    "WaveSurfer", "WaveRunner", "WavePro", "HDO", "WAVEDESC",
+    "RTP", "RTO", "RTE",
+]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Topic :: System :: Hardware",
 ]
 dependencies = [
     "numpy>=1.20",
 ]
+
+[project.urls]
+Homepage = "https://github.com/SGavrl/WfmOxide"
+Repository = "https://github.com/SGavrl/WfmOxide"
+Issues = "https://github.com/SGavrl/WfmOxide/issues"
+Changelog = "https://github.com/SGavrl/WfmOxide/releases"
 
 [project.optional-dependencies]
 test = [
