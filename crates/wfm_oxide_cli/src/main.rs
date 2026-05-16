@@ -194,6 +194,7 @@ fn format_si(value: f64, unit: &str) -> String {
     format!("{:.4} {}{}", value * scale, prefix, unit)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_convert(
     paths: Vec<PathBuf>,
     output: Option<PathBuf>,

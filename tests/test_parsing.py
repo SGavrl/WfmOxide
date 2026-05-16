@@ -128,3 +128,15 @@ def test_enabled_channels():
     path = "test_data/DS1054Z-ch1SquareCH2Uart.wfm"
     w_oxide = WfmOxide(path)
     assert w_oxide.enabled_channels == [1, 2]
+
+
+def test_no_enabled_channels_does_not_panic():
+    # Regression: time_axis() previously divided by zero on this file because
+    # stride() is 0 when no channels are enabled, which propagated as a
+    # PanicException through the Python bindings.
+    w = WfmOxide("test_data/DS1074Z-C.wfm")
+    assert w.enabled_channels == []
+    assert w.x_origin is None
+    assert w.x_increment is None
+    assert w.sample_rate is None
+    assert w.get_time_axis() is None

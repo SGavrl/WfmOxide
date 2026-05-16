@@ -73,7 +73,9 @@ impl WfmHeader1000Z {
         let count = self.enabled_channels_count();
         if count == 3 { 4 } else { count }
     }
-    pub fn points(&self) -> u32 { self.memory_depth / self.stride() as u32 }
+    pub fn points(&self) -> u32 {
+        self.memory_depth.checked_div(self.stride() as u32).unwrap_or(0)
+    }
 }
 
 // --- DS1000E ---

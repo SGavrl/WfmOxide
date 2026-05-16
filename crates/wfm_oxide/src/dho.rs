@@ -265,7 +265,7 @@ fn find_data_section(
 
 pub fn looks_like_dho_wfm(data: &[u8]) -> bool {
     if data.len() < 24 { return false; }
-    if &data[0..4] != [0x02, 0x00, 0x00, 0x00] { return false; }
+    if data[0..4] != [0x02, 0x00, 0x00, 0x00] { return false; }
     // Bytes 10-15 are always zero in observed DHO captures (padding around the
     // model code at 8-9). Combined with the magic, this is distinct from every
     // other supported family.

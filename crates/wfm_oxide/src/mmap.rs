@@ -344,7 +344,7 @@ impl WfmFile {
     pub fn time_axis(&self) -> Option<TimeAxis> {
         match &self.wfm_header {
             WfmHeader::Ds1000z(h) => {
-                if h.sample_rate_ghz <= 0.0 { return None; }
+                if h.sample_rate_ghz <= 0.0 || h.enabled_channels_count() == 0 { return None; }
                 let dt = 1.0 / (h.sample_rate_ghz as f64 * 1e9);
                 let trigger = h.picoseconds_offset as f64 * 1e-12;
                 let n = h.points() as f64;
@@ -387,7 +387,7 @@ impl WfmFile {
     /// Per-channel acquisition settings, when available. Returns None for channels
     /// that are not enabled or for formats whose header does not record them.
     pub fn channel_metadata(&self, channel: usize) -> Option<ChannelMeta> {
-        if channel < 1 || channel > 4 {
+        if !(1..=4).contains(&channel) {
             return None;
         }
         let ch_idx = channel - 1;
